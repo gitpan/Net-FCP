@@ -19,8 +19,23 @@ of what the messages do. I am too lazy to document all this here.
 =head1 WARNING
 
 This module is alpha. While it probably won't destroy (much :) of your
-data, it currently works only with the Event module (alkthough the event
-mechanism is fully pluggable).
+data, it currently falls short of what it should provide (intelligent uri
+following, splitfile downloads, healing...)
+
+=head2 IMPORT TAGS
+
+Nothing much can be "imported" from this module right now. There are,
+however, certain "import tags" that can be used to select the event model
+to be used.
+
+Event models are implemented as modules under the C<Net::FCP::Event::xyz>
+class, where C<xyz> is the event model to use. The default is C<Event> (or
+later C<Auto>).
+
+The import tag to use is named C<event=xyz>, e.g. C<event=Event>,
+C<event=Glib> etc.
+
+You should specify the event module to use only in the main program.
 
 =head2 THE Net::FCP CLASS
 
@@ -33,33 +48,21 @@ package Net::FCP;
 use Carp;
 use IO::Socket::INET;
 
-$VERSION = 0.03;
+$VERSION = 0.04;
 
-sub event_reg_cb {
-   my ($obj) = @_;
-   require Event;
+our $EVENT = Net::FCP::Event::Auto::;
+$EVENT = Net::FCP::Event::Event::;#d#
 
-   $obj->{eventdata} = Event->io (
-      fd   => $obj->{fh},
-      poll => 'r',
-      cb   => sub {
-         $obj->fh_ready;
-      },
-   );
+sub import {
+   shift;
+
+   for (@_) {
+      if (/^event=(\w+)$/) {
+         $EVENT = "Net::FCP::Event::$1";
+      }
+   }
+   eval "require $EVENT";
 }
-
-sub event_unreg_cb {
-   $_[0]{eventdata}
-      and (delete $_[0]{eventdata})->cancel;
-}
-
-sub event_wait_cb {
-   Event::one_event();
-}
-
-$regcb = \&event_reg_cb;
-$unregcb = \&event_unreg_cb;
-$waitcb = \&event_wait_cb;
 
 sub touc($) {
    local $_ = shift;
@@ -159,6 +162,11 @@ sub new {
       or croak "unable to get nodehello from node\n";
 
    $self;
+}
+
+sub progress {
+   my ($self, $txn, $type, $attr) = @_;
+   warn "progress<$txn,$type," . (join ":", %$attr) . ">\n";
 }
 
 =item $txn = $fcp->txn(type => attr => val,...)
@@ -404,9 +412,21 @@ sub new {
    
    $self->{fh} = $fh;
    
-   $Net::FCP::regcb->($self);
+   $EVENT->reg_r_cb ($self);
    
    $self;
+}
+
+=item $userdata = $txn->userdata ([$userdata])
+
+Get and/or set user-specific data. This is useful in progress callbacks.
+
+=cut
+
+sub userdata($;$) {
+   my ($self, $data) = @_;
+   $self->{userdata} = $data if @_ >= 2;
+   $self->{userdata};
 }
 
 sub fh_ready {
@@ -432,7 +452,7 @@ sub fh_ready {
          }
       }
    } else {
-      $Net::FCP::unregcb->($self);
+      $EVENT->unreg_r_cb ($self);
       delete $self->{fh};
       $self->eof;
    }
@@ -442,6 +462,8 @@ sub rcv_data {
    my ($self, $chunk) = @_;
 
    $self->{data} .= $chunk;
+
+   $self->progress ("data", { chunk => length $chunk, total => length $self->{data}, end => $self->{datalength} });
 }
 
 sub rcv {
@@ -458,6 +480,13 @@ sub rcv {
    }
 }
 
+sub throw {
+   my ($self, $exc) = @_;
+
+   $self->{exception} = $exc;
+   $self->set_result (1);
+}
+
 sub set_result {
    my ($self, $result) = @_;
 
@@ -467,6 +496,11 @@ sub set_result {
 sub eof {
    my ($self) = @_;
    $self->set_result;
+}
+
+sub progress {
+   my ($self, $type, $attr) = @_;
+   $self->{fcp}->progress ($self, $type, $attr);
 }
 
 =item $result = $txn->result
@@ -481,13 +515,16 @@ is done outside the "mainloop".
 sub result {
    my ($self) = @_;
 
-   $Net::FCP::waitcb->() while !exists $self->{result};
+   $EVENT->wait_event while !exists $self->{result};
+
+   die $self->{exception} if $self->{exception};
 
    return $self->{result};
 }
 
 sub DESTROY {
-   $Net::FCP::unregcb->($_[0]);
+   $EVENT->unreg_r_cb ($_[0]);
+   #$EVENT->unreg_w_cb ($_[0]);
 }
 
 package Net::FCP::Txn::ClientHello;
@@ -555,14 +592,35 @@ package Net::FCP::Txn::ClientGet;
 use base Net::FCP::Txn;
 
 sub rcv_data_found {
-   my ($self, $attr) = @_;
+   my ($self, $attr, $type) = @_;
+
+   $self->progress ($type, $attr);
 
    $self->{datalength} = hex $attr->{data_length};
    $self->{metalength} = hex $attr->{metadata_length};
 }
 
+sub rcv_route_not_found {
+   my ($self, $attr, $type) = @_;
+
+   $self->throw (new Net::FCP::Exception $type, $attr);
+}
+
+sub rcv_data_not_found {
+   my ($self, $attr, $type) = @_;
+
+   $self->throw (new Net::FCP::Exception $type, $attr);
+}
+
+sub rcv_format_error {
+   my ($self, $attr, $type) = @_;
+
+   $self->throw (new Net::FCP::Exception $type, $attr);
+}
+
 sub rcv_restarted {
-   # nop, maybe feedback
+   my ($self, $attr, $type) = @_;
+   $self->progress ($type, $attr);
 }
 
 sub eof {
@@ -572,6 +630,19 @@ sub eof {
    my $meta = Net::FCP::parse_metadata substr $data, 0, $self->{metalength}, "";
 
    $self->set_result ([$meta, $data]);
+}
+
+package Net::FCP::Exception;
+
+use overload
+   '""' => sub {
+      "Net::FCP::Exception<<$_[0][0]," . (join ":", %{$_[0][1]}) . ">>\n";
+   };
+
+sub new {
+   my ($class, $type, $attr) = @_;
+
+   bless [$type, { %$attr }], $class;
 }
 
 =back

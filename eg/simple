@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-use Net::FCP;
+use Net::FCP qw(event=Event);
 
 my $fcp = new Net::FCP;
 

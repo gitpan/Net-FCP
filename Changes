@@ -1,5 +1,8 @@
 Revision history for Perl extension Net:FCP
 
+0.04  Tue Sep  9 08:12:59 CEST 2003
+	- pluggable event implementation. Just Event for now.
+
 0.03  Mon Sep  8 03:46:41 CEST 2003
 	- more bugfixes, metadataparsing.
         - I'm going to bed now. really.

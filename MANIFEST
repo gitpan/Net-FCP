@@ -4,6 +4,7 @@ MANIFEST
 COPYING
 Makefile.PL
 FCP.pm
+Event/Event.pm
 t/00_load.t
 eg/simple
 eg/fetch1
