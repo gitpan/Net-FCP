@@ -216,12 +216,12 @@ WARNING
 
         THIS INTERFACE IS UNTESTED AND SUBJECT TO CHANGE.
 
-    MISSING: (ClientPut), InsretKey
+    MISSING: (ClientPut), InsertKey
 
   THE Net::FCP::Txn CLASS
-    All requests (or transactions) are executed in a asynchroneous way (LIE:
-    uploads are blocking). For each request, a "Net::FCP::Txn" object is
-    created (worse: a tcp connection is created, too).
+    All requests (or transactions) are executed in a asynchronous way. For
+    each request, a "Net::FCP::Txn" object is created (worse: a tcp
+    connection is created, too).
 
     For each request there is actually a different subclass (and it's
     possible to subclass these, although of course not documented).
@@ -262,7 +262,11 @@ WARNING
         Waits until a result is available and then returns it.
 
         This waiting is (depending on your event model) not very efficient,
-        as it is done outside the "mainloop".
+        as it is done outside the "mainloop". The biggest problem, however,
+        is that it's blocking one thread of execution. Try to use the
+        callback mechanism, if possible, and call result from within the
+        callback (or after is has been run), as then no waiting is
+        necessary.
 
   The Net::FCP::Exception CLASS
     Any unexpected (non-standard) responses that make it impossible to

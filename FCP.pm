@@ -74,7 +74,7 @@ package Net::FCP;
 
 use Carp;
 
-$VERSION = 0.08;
+$VERSION = 0.5;
 
 no warnings;
 
@@ -103,6 +103,11 @@ sub tolc($) {
    local $_ = shift;
    s/(?<=[a-z])(?=[A-Z])/_/g;
    lc $_;
+}
+
+# the opposite of hex
+sub xeh($) {
+   sprintf "%x", $_[0];
 }
 
 =item $meta = Net::FCP::parse_metadata $string
@@ -330,7 +335,7 @@ $txn->(generate_chk => sub {
 
    $self->txn (generate_chk =>
                   data => "$metadata$data",
-                  metadata_length => length $metadata,
+                  metadata_length => xeh length $metadata,
                   cipher => $cipher || "Twofish");
 });
 
@@ -411,7 +416,7 @@ Due to the overhead, a better method to download big files should be used.
 $txn->(client_get => sub {
    my ($self, $uri, $htl, $removelocal) = @_;
 
-   $self->txn (client_get => URI => $uri, hops_to_live => (defined $htl ? $htl :15),
+   $self->txn (client_get => URI => $uri, hops_to_live => xeh (defined $htl ? $htl : 15),
                remove_local_key => $removelocal ? "true" : "false");
 });
 
@@ -432,22 +437,22 @@ THIS INTERFACE IS UNTESTED AND SUBJECT TO CHANGE.
 $txn->(client_put => sub {
    my ($self, $uri, $meta, $data, $htl, $removelocal) = @_;
 
-   $self->txn (client_put => URI => $uri, hops_to_live => (defined $htl ? $htl :15),
+   $self->txn (client_put => URI => $uri, xeh (defined $htl ? $htl : 15),
                remove_local_key => $removelocal ? "true" : "false",
-               data => "$meta$data", metadata_length => length $meta);
+               data => "$meta$data", metadata_length => xeh length $meta);
 });
 
 } # transactions
 
-=item MISSING: (ClientPut), InsretKey
+=item MISSING: (ClientPut), InsertKey
 
 =back
 
 =head2 THE Net::FCP::Txn CLASS
 
-All requests (or transactions) are executed in a asynchroneous way (LIE:
-uploads are blocking). For each request, a C<Net::FCP::Txn> object is
-created (worse: a tcp connection is created, too).
+All requests (or transactions) are executed in a asynchronous way. For
+each request, a C<Net::FCP::Txn> object is created (worse: a tcp
+connection is created, too).
 
 For each request there is actually a different subclass (and it's possible
 to subclass these, although of course not documented).
@@ -682,7 +687,10 @@ sub progress {
 Waits until a result is available and then returns it.
 
 This waiting is (depending on your event model) not very efficient, as it
-is done outside the "mainloop".
+is done outside the "mainloop". The biggest problem, however, is that it's
+blocking one thread of execution. Try to use the callback mechanism, if
+possible, and call result from within the callback (or after is has been
+run), as then no waiting is necessary.
 
 =cut
 
@@ -750,7 +758,7 @@ use base Net::FCP::Txn;
 
 sub rcv_success {
    my ($self, $attr) = @_;
-   $self->set_result ($attr->{Length});
+   $self->set_result (hex $attr->{Length});
 }
 
 package Net::FCP::Txn::GetPut;
@@ -790,6 +798,7 @@ sub rcv_data {
       my $meta = Net::FCP::parse_metadata substr $data, 0, $self->{metalength}, "";
 
       $self->set_result ([$meta, $data]);
+      $self->eof;
    }
 }
 
@@ -837,7 +846,7 @@ package Net::FCP::Exception;
 
 use overload
    '""' => sub {
-      "Net::FCP::Exception<<$_[0][0]," . (join ":", %{$_[0][1]}) . ">>\n";
+      "Net::FCP::Exception<<$_[0][0]," . (join ":", %{$_[0][1]}) . ">>";
    };
 
 =item $exc = new Net::FCP::Exception $type, \%attr
