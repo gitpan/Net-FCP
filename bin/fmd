@@ -45,6 +45,10 @@ Just pasting a CHK and a filename sperated by one or more spaces or
 slashes will add files to the queue. The line can have leading garbage,
 i.e. you can paste full uris.
 
+=item <attachment>...</attachment>
+
+=item <attach>...</attach>
+
 =item <attached>...</attached>
 
 Will add frosts mentally deranged pseudo-xml format, soon to be replaced
@@ -90,17 +94,18 @@ use Coro;
 use Coro::Event;
 use Coro::Handle;
 use Coro::Signal;
+use Coro::Timer;
 use List::Util;
 use Digest::SHA1;
-use Crypt::Twofish2;
 use Algorithm::FEC;
 use Digest::SHA1;
 use Net::FCP::Util;
+use POSIX ();
 
 $|=1;
 
 our $MAX_TXN = 200; # use max. this many transactions in parallel
-our @HTL = (0, 15, 25, 5, 25, 3, 25, 15, (25) x 5);
+our @HTL = (0, 10, 0, 15, 0, 20, 0, 25, 0);
 our $VERIFY_CHK = 1; # verify all blocks, again and again (only useful to debugging).
 our $FMD_HOME = $ENV{FMD_HOME} || "$ENV{HOME}/fmd";
 
@@ -136,11 +141,11 @@ sub push_key {
 sub cmdline {
    my ($i, $o) = @_;
 
-   async {
+   my $cmd = async {
       my $job;
       while (print $o "> " and defined ($_ = <$i>)) {
          chomp;
-         if (/<attached>(.*) \* (CHK[^<]+)<\/attached>/) {
+         if (/<attach(?:ment|ed|)>(.*) \* (CHK[^<]+)<\/attach/) {
             $job = push_key $2, $1;
          } elsif (/(CHK\@[a-zA-Z0-9,~\-]{54})[\/ ]+(.*)$/) {
             $job = push_key $1, $2;
@@ -178,7 +183,7 @@ sub cmdline {
             }
          }
       }
-   }
+   };
 }
 
 package job;
@@ -302,8 +307,9 @@ sub fetch_uri {
 
 sub log {
    my ($self, $text) = @_;
-   warn "$self->{id}: $text\n";
-   $self->{log} .= "$text\n";
+   my $time = POSIX::strftime "%H:%M:%S", localtime time;
+   warn "$time $self->{id}: $text\n";
+   $self->{log} .= "$time $text\n";
 }
 
 sub feedback {
@@ -389,23 +395,26 @@ sub state_examine {
    my $p = $self->{p};
 
    $self->{status} = "initial fetch";
-   $self->log ("fetching $p->{key} (=$p->{title})");
 
-   ($p->{meta}, $p->{data}) = fetch_uri 100, "freenet:$p->{key}";
-   $self->save;
-   #use PApp::Util; print STDERR PApp::Util::dumpval [keys %{$meta->{document}[0]{split_file}}];
-   $self->log ("type $p->{meta}{document}[0]{info}{format}");
+   for (;;) {
+      $self->log ("fetching $p->{key} (=$p->{title})");
 
-   if (my $splitfile = $p->{meta}{document}[0]{split_file}) {
-      return "splitfile";
-   } elsif ((defined $p->{data}) and (length $p->{data})) {
-      syswrite $self->{fh}, $p->{data};
-      return ["finish", 1];
+      ($p->{meta}, $p->{data}) = fetch_uri 100, "freenet:$p->{key}";
+      $self->save;
+      #use PApp::Util; print STDERR PApp::Util::dumpval [keys %{$meta->{document}[0]{split_file}}];
+      $self->log ("type $p->{meta}{document}[0]{info}{format}");
+
+      if (my $splitfile = $p->{meta}{document}[0]{split_file}) {
+         return "splitfile";
+      } elsif ((defined $p->{data}) and (length $p->{data})) {
+         syswrite $self->{fh}, $p->{data};
+         return ["finish", 1];
+      }
+
+      $self->log ("EMPTY, retrying in an hour");
+      Coro::Timer::sleep 3600;
    }
 
-   warn "EMPTY FILE<$p->{title}>\n";
-   $self->{status} = "aborted due to bug or really not found";
-   terminate;
 }
 
 sub state_splitfile {
@@ -514,13 +523,13 @@ sub state_splitfile {
             next if $txn[$id] || $blk->{done} || $blk->{seg}{todo} <= $blk->{seg}{done};
 
             my $htl = $HTL[$blk->{htl}++ % @HTL];
-            my $pri = $p->{pri} * ($blk->{seg}{done} + 1) / ($blk->{seg}{todo} * ($htl + 1));
+            #my $pri = $p->{pri} * ($blk->{seg}{done} + 1) / ($blk->{seg}{todo} * ($htl + 1));
+            my $pri = $p->{pri} * ($blk->{seg}{done} + 1) / $blk->{seg}{todo};
 
             #warn "GET<$blk->{uri}, $htl>\n";
             txn_begin $pri;
             $txn[$id] ||= $FCP->txn_client_get ($blk->{uri}, $htl)->cb(sub {
                undef $txn[$id];
-               txn_end;
 
                my $seg = $blk->{seg};
 
@@ -547,7 +556,12 @@ sub state_splitfile {
                   $self->log (sprintf "got block $seg->{id}.$id ($seg->{done}/$seg->{todo}) at htl $htl (%f) and pri $pri", $::htl_sum / $::htl_cnt);
                } else {
                   if ($@) {
-                     unless ($@->type ("data_not_found")) {
+                     if ($@->type ("data_not_found")) {
+                        # nop
+                     } elsif ($@->type ("network_error")) {
+                        $self->log ("$@, retrying in 1s");
+                        CORE::sleep 1;
+                     } else {
                         $self->log ("$@");
                      }
                   }
@@ -555,6 +569,7 @@ sub state_splitfile {
                }
                $self->{status} = "splitfile fetch ($seg->{done}/$seg->{todo}, $fail failed)";
 
+               txn_end;
                $sig->send;
             });
          }
@@ -562,41 +577,40 @@ sub state_splitfile {
          for my $seg (@segments) {
             if ($seg->{done} >= $seg->{todo} && !$seg->{finished}) {
 
-               warn "segment done, cancelling segment $seg->{id}\n";
+               $self->log ("segment done, cancelling segment $seg->{id}");
                for my $id (@{$seg->{blk}}) {
                   (delete $txn[$id])->cancel if $txn[$id];
                }
 
-               warn "verifying segment $seg->{id}\n";
+               $self->log ("verifying segment $seg->{id}");
                for my $id (@{$seg->{blk}}) {
                   my $blk = $blk->[$id];
                   if ($blk->{done}) {
-                     print "V";#d#
                      sysseek $self->{fh}, $blk->{offset}, 0;
                      sysread $self->{fh}, my $buf, $blk->{size};
 
-                     Coro::cede;
-
-                     my $k1 = Net::FCP::Util::extract_chk_key $blk->{uri};
-                     my $k2 = Net::FCP::Util::generate_chk_key $blk->{meta}, $buf;
+                     my $k1 = Net::FCP::Util::extract_chk_hash $blk->{uri};
+                     my $k2 = Net::FCP::Util::generate_chk_hash $blk->{meta}, $buf;
 
                      if ($k1 ne $k2) {
-                        warn sprintf "$p->{title} block $id BROKEN (%s != %s)",
-                                     (unpack "H*", $k1), (unpack "H*", $k2);
+                        print "v";#d#
+                        #warn sprintf "$p->{title} block $id BROKEN (%s != %s)", (unpack "H*", $k1), (unpack "H*", $k2);
                         $blk->{done} = 0;
                         $seg->{done}--;
                         $self->save;
+                     } else {
+                        print "V";#d#
                      }
                   }
                }
                print "\n";
 
                if ($seg->{done} >= $seg->{todo} && !$seg->{finished}) {
-                  warn "verified segment OK $seg->{id}\n";
+                  $self->log ("verified segment OK $seg->{id}");
                   $seg->{finished}++;
                   $segments--;
                } else {
-                  warn "verified segment NOT OK $seg->{id}\n";
+                  $self->log ("verified segment NOT OK $seg->{id}");
                }
             }
          }
@@ -648,10 +662,11 @@ sub state_splitfile {
          or die "DD: $!";
       #$dd = Coro::Handle::unblock $dd;
       $sha1->addfile ($dd);
+      $sha1 = $sha1->hexdigest;
 
       if (exists $p->{meta}{document}[0]{info}{checksum}
-          and $p->{meta}{document}[0]{info}{checksum} ne $sha1->hexdigest) {
-         warn "META: $p->{meta}{document}[0]{info}{checksum} and real checksum for $filesize DIFFER\n";
+          and $p->{meta}{document}[0]{info}{checksum} ne $sha1) {
+         $self->log ("META: $p->{meta}{document}[0]{info}{checksum} and real checksum $sha1 for $filesize DIFFER");
          $self->feedback ("CHECKSUM ERROR");
          terminate;
       }
@@ -669,9 +684,13 @@ sub state_splitfile {
 
 package main;
 
+$|=1;
+
 for (<\Q$QUEUE_HOME\E/*.j>) {
    job->new_from_file ($_);
+   print "J";
 }
+print "\n";
 
 open my $stdin , "<&0" or die;
 open my $stdout, ">&1" or die;

@@ -9,8 +9,6 @@ Net::FCP::Util - utility functions.
 
 =head1 DESCRIPTION
 
-=back
-
 =over 4
 
 =cut
@@ -23,12 +21,33 @@ use MIME::Base64 ();
 
 no warnings;
 
-sub log2($$) { # n, minlog
-   my ($n, $b) = @_;
+=item log2 $num[, $minlog]
 
-   $b++ while 1 << $b < $n;
+Calculate the (integer) log2 of a number, rounded up. If C<$minlog> is
+given it will be the minimum value returned.
 
-   $b;
+=cut
+
+sub log2($;$) { # n, minlog
+   $_[0] && length sprintf "%$_[1]b", $_[0] - 1;
+}
+# the above line is much faster than the equivalent
+# below, which illustrates a fine point of perl...
+#  my ($n, $b) = @_;
+#  $b++ while 1 << $b < $n;
+#  $b;
+
+=item encode_mpi $num
+
+Encode the given number as a multiple-precision number (2 byte bitlength + bytes)
+
+=cut
+
+sub encode_mpi($) {
+   my $num = pack "N", $_[0];
+   my $len = log2 $_[0], 1;
+   $num =~ s/^\x00+//;
+   pack "n a*", $len, $num;
 }
 
 =item decode_base64 $string
@@ -57,17 +76,17 @@ sub encode_base64($) {
    $s;
 }
 
-=item generate_chk_key $metadata, $data
+=item generate_chk_hash $metadata, $data
 
-Generate and return they key portion that would be used in the CHK (as
-binary). This can be used to verify contents of a CHK, since this key is a
-hash over the data.
+Generate and return they hash portion (the part after the comma, the
+crypto key) that would be used in the CHK (as binary). This can be used to
+verify contents of a CHK, since this key is a hash over the data.
 
 (This function assumes a 128 bit key, which seems standard in freenet).
 
 =cut
 
-sub generate_chk_key($$) {
+sub generate_chk_hash($$) {
    my $d = new Digest::SHA1;
 
    $d->add ($_[0]);
@@ -81,14 +100,14 @@ sub generate_chk_key($$) {
    substr $k->digest, 0, 16; # extract leading 128 bit
 }
 
-=item extract_chk_key $uri
+=item extract_chk_hash $uri
 
-Extract the key portion of a CHK (in binary). Useful to compare against
-the output of generate_chk_key.
+Extract the hash portion (the part after the comma, the crypto key) of a
+CHK (in binary). Useful to compare against the output of generate_chk_key.
 
 =cut
 
-sub extract_chk_key($) {
+sub extract_chk_hash($) {
    $_[0] =~ /CHK\@[a-zA-Z0-9~\-]{31},([a-zA-Z0-9~\-]{22})/
       or Carp::croak "unable to parse CHK key from '$_[0]'";
 

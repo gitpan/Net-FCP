@@ -1,6 +1,6 @@
 use ExtUtils::MakeMaker;
 
-require 5.005;
+require 5.008;
 
 WriteMakefile(
     dist	=> {
@@ -11,6 +11,12 @@ WriteMakefile(
     NAME => "Net::FCP",
     VERSION_FROM => "FCP.pm",
     EXE_FILES    => [qw(bin/fmd)],
+    PREREQ_PM    => {
+                       Crypt::Twofish  => 0,
+                       Crypt::Rijndael => 0,
+                       Digest::SHA1    => 0,
+                       Event           => 0.87, # or Tk, Glib, Coro
+                    },
     PM           => {
     		    'FCP.pm'		=> '$(INST_LIBDIR)/FCP.pm',
     		    'Util.pm'		=> '$(INST_LIBDIR)/FCP/Util.pm',

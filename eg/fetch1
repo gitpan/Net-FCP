@@ -2,7 +2,7 @@
 
 use Net::FCP;
 
-# fetch a single (small) keyand output it to stdout
+# fetch a single (small) key and output it to stdout
 
 my $fcp = new Net::FCP;
 

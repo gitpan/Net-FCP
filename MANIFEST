@@ -9,6 +9,7 @@ Event/Event.pm
 Event/Coro.pm
 Event/Glib.pm
 Event/Tk.pm
+Key/CHK.pm
 t/00_load.t
 eg/simple
 eg/fetch1

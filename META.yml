@@ -1,10 +1,14 @@
 # http://module-build.sourceforge.net/META-spec.html
 #XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
 name:         Net-FCP
-version:      0.5
+version:      0.6
 version_from: FCP.pm
 installdirs:  site
 requires:
+    Crypt::Rijndael:               0
+    Crypt::Twofish:                0
+    Digest::SHA1:                  0
+    Event:                         0.87
 
 distribution_type: module
-generated_by: ExtUtils::MakeMaker version 6.16
+generated_by: ExtUtils::MakeMaker version 6.21

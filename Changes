@@ -1,5 +1,10 @@
 Revision history for Perl extension Net::FCP
 
+0.6  Thu May 13 23:42:33 CEST 2004
+	- many bugfixes (most noteworthy: client_put works now).
+        - progress callback.
+        - added experimental Key::CHK.
+
 0.5  Tue Sep 23 22:46:48 CEST 2003
 	- some more IT'S HEX, STUPID-type of fixes.
         - restructured fmd. works perfect and fast for me now.

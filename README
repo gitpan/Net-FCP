@@ -89,13 +89,28 @@ WARNING
                           ]
            )
 
-    $fcp = new Net::FCP [host => $host][, port => $port]
+    $string = Net::FCP::build_metadata $meta
+        Takes a hash reference as returned by "Net::FCP::parse_metadata" and
+        returns the corresponding string form. If a string is given, it's
+        returned as is.
+
+    $fcp = new Net::FCP [host => $host][, port => $port][, progress => \&cb]
         Create a new virtual FCP connection to the given host and port
         (default 127.0.0.1:8481, or the environment variables "FREDHOST" and
         "FREDPORT").
 
         Connections are virtual because no persistent physical connection is
         established.
+
+        You can install a progress callback that is being called with the
+        Net::FCP object, a txn object, the type of the transaction and the
+        attributes. Use it like this:
+
+           sub progress_cb {
+              my ($self, $txn, $type, $attr) = @_;
+
+              warn "progress<$txn,$type," . (join ":", %$attr) . ">\n";
+           }
 
     $txn = $fcp->txn(type => attr => val,...)
         The low-level interface to transactions. Don't use it.
@@ -162,39 +177,52 @@ WARNING
 
     $txn = $fcp->txn_generate_chk ($metadata, $data[, $cipher])
     $uri = $fcp->generate_chk ($metadata, $data[, $cipher])
-        Calculcates a CHK, given the metadata and data. $cipher is either
+        Calculates a CHK, given the metadata and data. $cipher is either
         "Rijndael" or "Twofish", with the latter being the default.
 
     $txn = $fcp->txn_generate_svk_pair
     ($public, $private) = @{ $fcp->generate_svk_pair }
-        Creates a new SVK pair. Returns an arrayref.
+        Creates a new SVK pair. Returns an arrayref with the public key, the
+        private key and a crypto key, which is just additional entropy.
 
            [
-             "hKs0-WDQA4pVZyMPKNFsK1zapWY",
-             "ZnmvMITaTXBMFGl4~jrjuyWxOWg"
+             "acLx4dux9fvvABH15Gk6~d3I-yw",
+             "cPoDkDMXDGSMM32plaPZDhJDxSs",
+             "BH7LXCov0w51-y9i~BoB3g",
            ]
 
-    $txn = $fcp->txn_insert_private_key ($private)
-    $public = $fcp->insert_private_key ($private)
-        Inserts a private key. $private can be either an insert URI (must
-        start with "freenet:SSK@") or a raw private key (i.e. the private
-        value you get back from "generate_svk_pair").
+        A private key (for inserting) can be constructed like this:
+
+           SSK@<private_key>,<crypto_key>/<name>
+
+        It can be used to insert data. The corresponding public key looks
+        like this:
+
+           SSK@<public_key>PAgM,<crypto_key>/<name>
+
+        Watch out for the "PAgM"-part!
+
+    $txn = $fcp->txn_invert_private_key ($private)
+    $public = $fcp->invert_private_key ($private)
+        Inverts a private key (returns the public key). $private can be
+        either an insert URI (must start with "freenet:SSK@") or a raw
+        private key (i.e. the private value you get back from
+        "generate_svk_pair").
 
         Returns the public key.
-
-        UNTESTED.
 
     $txn = $fcp->txn_get_size ($uri)
     $length = $fcp->get_size ($uri)
         Finds and returns the size (rounded up to the nearest power of two)
         of the given document.
 
-        UNTESTED.
-
     $txn = $fcp->txn_client_get ($uri [, $htl = 15 [, $removelocal = 0]])
     ($metadata, $data) = @{ $fcp->client_get ($uri, $htl, $removelocal)
         Fetches a (small, as it should fit into memory) file from freenet.
         $meta is the metadata (as returned by "parse_metadata" or "undef").
+
+        The $uri should begin with "freenet:", but the scheme is currently
+        added, if missing.
 
         Due to the overhead, a better method to download big files should be
         used.
@@ -209,14 +237,14 @@ WARNING
     my $uri = $fcp->client_put ($uri, $metadata, $data, $htl, $removelocal);
         Insert a new key. If the client is inserting a CHK, the URI may be
         abbreviated as just CHK@. In this case, the node will calculate the
-        CHK.
+        CHK. If the key is a private SSK key, the node will calculcate the
+        public key and the resulting public URI.
 
-        $meta can be a reference or a string (ONLY THE STRING CASE IS
-        IMPLEMENTED!).
+        $meta can be a hash reference (same format as returned by
+        "Net::FCP::parse_metadata") or a string.
 
-        THIS INTERFACE IS UNTESTED AND SUBJECT TO CHANGE.
-
-    MISSING: (ClientPut), InsertKey
+        The result is an arrayref with the keys "uri", "public_key" and
+        "private_key".
 
   THE Net::FCP::Txn CLASS
     All requests (or transactions) are executed in a asynchronous way. For

@@ -74,7 +74,7 @@ package Net::FCP;
 
 use Carp;
 
-$VERSION = 0.5;
+$VERSION = 0.6;
 
 no warnings;
 
@@ -101,6 +101,8 @@ sub touc($) {
 
 sub tolc($) {
    local $_ = shift;
+   1 while s/(SVK|CHK|URI)([^_])/$1\_$2/i;
+   1 while s/([^_])(SVK|CHK|URI)/$1\_$2/i;
    s/(?<=[a-z])(?=[A-Z])/_/g;
    lc $_;
 }
@@ -182,13 +184,70 @@ sub parse_metadata {
    $meta;
 }
 
-=item $fcp = new Net::FCP [host => $host][, port => $port]
+=item $string = Net::FCP::build_metadata $meta
+
+Takes a hash reference as returned by C<Net::FCP::parse_metadata> and
+returns the corresponding string form. If a string is given, it's returned
+as is.
+
+=cut
+
+sub build_metadata_subhash($$$) {
+   my ($prefix, $level, $hash) = @_;
+
+   join "",
+      map
+         ref $hash->{$_} ? build_metadata_subhash ($prefix . (Net::FCP::touc $_) . ".", $level + 1, $hash->{$_})
+                         : $prefix . ($level > 1 ? $_ : Net::FCP::touc $_) . "=" . $hash->{$_} . "\n",
+         keys %$hash;
+}
+
+sub build_metadata_hash($$) {
+   my ($header, $hash) = @_;
+
+   if (ref $hash eq ARRAY::) {
+      join "", map build_metadata_hash ($header, $_), @$hash
+   } else {
+      (Net::FCP::touc $header) . "\n"
+      . (build_metadata_subhash "", 0, $hash)
+      . "EndPart\n";
+   }
+}
+
+sub build_metadata($) {
+   my ($meta) = @_;
+
+   return $meta unless ref $meta;
+
+   $meta = { %$meta };
+
+   delete $meta->{raw};
+
+   my $res =
+      (build_metadata_hash version => delete $meta->{version})
+      . (join "", map +(build_metadata_hash $_, $meta->{$_}), keys %$meta);
+
+   substr $res, 0, -5; # get rid of "Part". Broken Syntax....
+}
+
+
+=item $fcp = new Net::FCP [host => $host][, port => $port][, progress => \&cb]
 
 Create a new virtual FCP connection to the given host and port (default
 127.0.0.1:8481, or the environment variables C<FREDHOST> and C<FREDPORT>).
 
 Connections are virtual because no persistent physical connection is
 established.
+
+You can install a progress callback that is being called with the Net::FCP
+object, a txn object, the type of the transaction and the attributes. Use
+it like this:
+
+   sub progress_cb {
+      my ($self, $txn, $type, $attr) = @_;
+
+      warn "progress<$txn,$type," . (join ":", %$attr) . ">\n";
+   }
 
 =begin comment
 
@@ -214,7 +273,9 @@ sub new {
 
 sub progress {
    my ($self, $txn, $type, $attr) = @_;
-   #warn "progress<$txn,$type," . (join ":", %$attr) . ">\n";
+
+   $self->{progress}->($self, $txn, $type, $attr)
+      if $self->{progress};
 }
 
 =item $txn = $fcp->txn(type => attr => val,...)
@@ -250,7 +311,7 @@ sub txn {
 
    $type = touc $type;
 
-   my $txn = "Net::FCP::Txn::$type"->new(fcp => $self, type => tolc $type, attr => \%attr);
+   my $txn = "Net::FCP::Txn::$type"->new (fcp => $self, type => tolc $type, attr => \%attr);
 
    $txn;
 }
@@ -325,7 +386,7 @@ $txn->(client_info => sub {
 
 =item $uri = $fcp->generate_chk ($metadata, $data[, $cipher])
 
-Calculcates a CHK, given the metadata and data. C<$cipher> is either
+Calculates a CHK, given the metadata and data. C<$cipher> is either
 C<Rijndael> or C<Twofish>, with the latter being the default.
 
 =cut
@@ -343,12 +404,24 @@ $txn->(generate_chk => sub {
 
 =item ($public, $private) = @{ $fcp->generate_svk_pair }
 
-Creates a new SVK pair. Returns an arrayref.
+Creates a new SVK pair. Returns an arrayref with the public key, the
+private key and a crypto key, which is just additional entropy.
 
    [
-     "hKs0-WDQA4pVZyMPKNFsK1zapWY",
-     "ZnmvMITaTXBMFGl4~jrjuyWxOWg"
+     "acLx4dux9fvvABH15Gk6~d3I-yw",
+     "cPoDkDMXDGSMM32plaPZDhJDxSs",
+     "BH7LXCov0w51-y9i~BoB3g",
    ]
+
+A private key (for inserting) can be constructed like this:
+
+   SSK@<private_key>,<crypto_key>/<name>
+
+It can be used to insert data. The corresponding public key looks like this:
+
+   SSK@<public_key>PAgM,<crypto_key>/<name>
+
+Watch out for the C<PAgM>-part!
 
 =cut
 
@@ -358,21 +431,19 @@ $txn->(generate_svk_pair => sub {
    $self->txn ("generate_svk_pair");
 });
 
-=item $txn = $fcp->txn_insert_private_key ($private)
+=item $txn = $fcp->txn_invert_private_key ($private)
 
-=item $public = $fcp->insert_private_key ($private)
+=item $public = $fcp->invert_private_key ($private)
 
-Inserts a private key. $private can be either an insert URI (must start
-with C<freenet:SSK@>) or a raw private key (i.e. the private value you get
-back from C<generate_svk_pair>).
+Inverts a private key (returns the public key). C<$private> can be either
+an insert URI (must start with C<freenet:SSK@>) or a raw private key (i.e.
+the private value you get back from C<generate_svk_pair>).
 
 Returns the public key.
 
-UNTESTED.
-
 =cut
 
-$txn->(insert_private_key => sub {
+$txn->(invert_private_key => sub {
    my ($self, $privkey) = @_;
 
    $self->txn (invert_private_key => private => $privkey);
@@ -384,8 +455,6 @@ $txn->(insert_private_key => sub {
 
 Finds and returns the size (rounded up to the nearest power of two) of the
 given document.
-
-UNTESTED.
 
 =cut
 
@@ -403,6 +472,9 @@ Fetches a (small, as it should fit into memory) file from
 freenet. C<$meta> is the metadata (as returned by C<parse_metadata> or
 C<undef>).
 
+The C<$uri> should begin with C<freenet:>, but the scheme is currently
+added, if missing.
+
 Due to the overhead, a better method to download big files should be used.
 
   my ($meta, $data) = @{
@@ -416,6 +488,9 @@ Due to the overhead, a better method to download big files should be used.
 $txn->(client_get => sub {
    my ($self, $uri, $htl, $removelocal) = @_;
 
+   $uri =~ s/^freenet://;
+   $uri = "freenet:$uri";
+
    $self->txn (client_get => URI => $uri, hops_to_live => xeh (defined $htl ? $htl : 15),
                remove_local_key => $removelocal ? "true" : "false");
 });
@@ -426,25 +501,28 @@ $txn->(client_get => sub {
 
 Insert a new key. If the client is inserting a CHK, the URI may be
 abbreviated as just CHK@. In this case, the node will calculate the
-CHK.
+CHK. If the key is a private SSK key, the node will calculcate the public
+key and the resulting public URI.
 
-C<$meta> can be a reference or a string (ONLY THE STRING CASE IS IMPLEMENTED!).
+C<$meta> can be a hash reference (same format as returned by
+C<Net::FCP::parse_metadata>) or a string.
 
-THIS INTERFACE IS UNTESTED AND SUBJECT TO CHANGE.
+The result is an arrayref with the keys C<uri>, C<public_key> and C<private_key>.
 
 =cut
 
 $txn->(client_put => sub {
    my ($self, $uri, $meta, $data, $htl, $removelocal) = @_;
 
-   $self->txn (client_put => URI => $uri, xeh (defined $htl ? $htl : 15),
+   $meta = build_metadata $meta;
+
+   $self->txn (client_put => URI => $uri,
+               hops_to_live => xeh (defined $htl ? $htl : 15),
                remove_local_key => $removelocal ? "true" : "false",
                data => "$meta$data", metadata_length => xeh length $meta);
 });
 
 } # transactions
-
-=item MISSING: (ClientPut), InsertKey
 
 =back
 
@@ -679,6 +757,7 @@ sub eof {
 
 sub progress {
    my ($self, $type, $attr) = @_;
+
    $self->{fcp}->progress ($self, $type, $attr);
 }
 
@@ -740,16 +819,16 @@ use base Net::FCP::Txn;
 
 sub rcv_success {
    my ($self, $attr) = @_;
-   $self->set_result ([$attr->{PublicKey}, $attr->{PrivateKey}]);
+   $self->set_result ([$attr->{public_key}, $attr->{private_key}, $attr->{crypto_key}]);
 }
 
-package Net::FCP::Txn::InsertPrivateKey;
+package Net::FCP::Txn::InvertPrivateKey;
 
 use base Net::FCP::Txn;
 
 sub rcv_success {
    my ($self, $attr) = @_;
-   $self->set_result ($attr->{PublicKey});
+   $self->set_result ($attr->{public_key});
 }
 
 package Net::FCP::Txn::GetSize;
@@ -758,7 +837,7 @@ use base Net::FCP::Txn;
 
 sub rcv_success {
    my ($self, $attr) = @_;
-   $self->set_result (hex $attr->{Length});
+   $self->set_result (hex $attr->{length});
 }
 
 package Net::FCP::Txn::GetPut;
@@ -767,8 +846,8 @@ package Net::FCP::Txn::GetPut;
 
 use base Net::FCP::Txn;
 
-*rcv_uri_error        = \&Net::FCP::Txn::rcv_throw_exception;
-*rcv_route_not_found  = \&Net::FCP::Txn::rcv_throw_exception;
+*rcv_uri_error       = \&Net::FCP::Txn::rcv_throw_exception;
+*rcv_route_not_found = \&Net::FCP::Txn::rcv_throw_exception;
 
 sub rcv_restarted {
    my ($self, $attr, $type) = @_;
@@ -911,9 +990,9 @@ L<http://freenet.sf.net>.
 package Net::FCP::Event::Auto;
 
 my @models = (
-      [Coro  => Coro::Event:: ],
+      [Coro  => Coro::Event::],
       [Event => Event::],
-      [Glib  => Glib:: ],
+      [Glib  => Glib::],
       [Tk    => Tk::],
 );
 
