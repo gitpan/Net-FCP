@@ -6,4 +6,5 @@ Makefile.PL
 FCP.pm
 t/00_load.t
 eg/simple
+eg/fetch1
 META.yml                                Module meta-data in YAML

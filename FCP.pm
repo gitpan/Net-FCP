@@ -33,7 +33,7 @@ package Net::FCP;
 use Carp;
 use IO::Socket::INET;
 
-$VERSION = 0.01;
+$VERSION = 0.02;
 
 sub event_reg_cb {
    my ($obj) = @_;
@@ -77,7 +77,7 @@ sub tolc($) {
 =item $fcp = new Net::FCP [host => $host][, port => $port]
 
 Create a new virtual FCP connection to the given host and port (default
-127.0.0.1:8481).
+127.0.0.1:8481, or the environment variables C<FREDHOST> and C<FREDPORT>).
 
 Connections are virtual because no persistent physical connection is
 established. However, the existance of the node is checked by executing a
@@ -89,10 +89,10 @@ sub new {
    my $class = shift;
    my $self = bless { @_ }, $class;
 
-   $self->{host} ||= "127.0.0.1";
-   $self->{port} ||= 8481;
+   $self->{host} ||= $ENV{FREDHOST} || "127.0.0.1";
+   $self->{port} ||= $ENV{FREDPORt} || 8481;
 
-   $self->{nodehello} = $self->txn("ClientHello")->result
+   $self->{nodehello} = $self->client_hello
       or croak "unable to get nodehello from node\n";
 
    $self;
@@ -128,8 +128,8 @@ Executes a ClientHello request and returns it's results.
 
    {
      max_file_size => "5f5e100",
-     protocol => "1.2",
      node => "Fred,0.6,1.46,7050"
+     protocol => "1.2",
    }
 
 =cut
@@ -147,27 +147,27 @@ _txn client_hello => sub {
 Executes a ClientInfo request and returns it's results.
 
    {
-     max_file_size => "5f5e100",
-     datastore_max => "2540be400",
-     node_port => 369,
-     java_name => "Java HotSpot(_T_M) Server VM",
-     operating_system_version => "2.4.20",
-     estimated_load => 52,
-     free_memory => "5cc0148",
-     datastore_free => "5ce03400",
-     node_address => "1.2.3.4",
      active_jobs => "1f",
      allocated_memory => "bde0000",
      architecture => "i386",
-     routing_time => "a5",
-     least_recent_timestamp => "f41538b878",
      available_threads => 17,
+     datastore_free => "5ce03400",
+     datastore_max => "2540be400",
      datastore_used => "1f72bb000",
-     java_version => "Blackdown-1.4.1-01",
+     estimated_load => 52,
+     free_memory => "5cc0148",
      is_transient => "false",
-     operating_system => "Linux",
+     java_name => "Java HotSpot(_T_M) Server VM",
      java_vendor => "http://www.blackdown.org/",
+     java_version => "Blackdown-1.4.1-01",
+     least_recent_timestamp => "f41538b878",
+     max_file_size => "5f5e100",
      most_recent_timestamp => "f77e2cc520"
+     node_address => "1.2.3.4",
+     node_port => 369,
+     operating_system => "Linux",
+     operating_system_version => "2.4.20",
+     routing_time => "a5",
    }
 
 =cut
@@ -248,7 +248,29 @@ _txn get_size => sub {
    $self->txn (get_size => URI => $uri);
 };
 
-=item MISSING: ClientGet, ClientPut
+=item $txn = $fcp->txn_client_get ($uri [, $htl = 15 [, $removelocal = 0]])
+
+=item ($data, $metadata) = @{ $fcp->client_get ($uri, $htl, $removelocal)
+
+Fetches a (small, as it should fit into memory) file from freenet.
+
+Due to the overhead, a better method to download big fiels should be used.
+
+  my ($data, $meta) = @{
+     $fcp->client_get (
+        "freenet:CHK@hdXaxkwZ9rA8-SidT0AN-bniQlgPAwI,XdCDmBuGsd-ulqbLnZ8v~w"
+     )
+  };
+
+=cut
+
+_txn client_get => sub {
+   my ($self, $uri, $htl, $removelocal) = @_;
+
+   $self->txn (client_get => URI => $uri, hops_to_live => ($htl || 15), remove_local => $removelocal*1);
+};
+
+=item MISSING: ClientPut
 
 =back
 
@@ -329,12 +351,12 @@ sub fh_ready {
       for (;;) {
          if ($self->{datalen}) {
             if (length $self->{buf} >= $self->{datalen}) {
-               $self->recv_data (substr $self->{buf}, 0, $self->{datalen}, "");
+               $self->rcv_data (substr $self->{buf}, 0, $self->{datalen}, "");
             } else {
                last;
             }
-         } elsif ($self->{buf} =~ s/^DataChunk\015?\012Length=(\d+)\015?\012Data\015?\012//) {
-            $self->{datalen} = $1;
+         } elsif ($self->{buf} =~ s/^DataChunk\015?\012Length=([0-9a-fA-F]+)\015?\012Data\015?\012//) {
+            $self->{datalen} = hex $1;
          } elsif ($self->{buf} =~ s/^([a-zA-Z]+)\015?\012(.*?)\015?\012EndMessage\015?\012//s) {
             $self->rcv ($1, {
                   map { my ($a, $b) = split /=/, $_, 2; ((Net::FCP::tolc $a), $b) }
@@ -353,6 +375,8 @@ sub fh_ready {
 
 sub rcv_data {
    my ($self, $chunk) = @_;
+
+   $self->{data} .= $chunk;
 }
 
 sub rcv {
@@ -360,25 +384,31 @@ sub rcv {
 
    $type = Net::FCP::tolc $type;
 
+   #use PApp::Util; warn PApp::Util::dumpval [$type, $attr];
+
    if (my $method = $self->can("rcv_$type")) {
       $method->($self, $attr, $type);
    } else {
       warn "received unexpected reply type '$type' for '$self->{type}', ignoring\n";
-      $self->eof;
    }
 }
 
-sub eof {
+sub set_result {
    my ($self, $result) = @_;
 
    $self->{result} = $result unless exists $self->{result};
+}
+
+sub eof {
+   my ($self) = @_;
+   $self->set_result;
 }
 
 =item $result = $txn->result
 
 Waits until a result is available and then returns it.
 
-This waiting is (depending on your event modul) not very efficient, as it
+This waiting is (depending on your event model) not very efficient, as it
 is done outside the "mainloop".
 
 =cut
@@ -402,7 +432,7 @@ use base Net::FCP::Txn;
 sub rcv_node_hello {
    my ($self, $attr) = @_;
 
-   $self->eof ($attr);
+   $self->set_result ($attr);
 }
 
 package Net::FCP::Txn::ClientInfo;
@@ -412,7 +442,7 @@ use base Net::FCP::Txn;
 sub rcv_node_info {
    my ($self, $attr) = @_;
 
-   $self->eof ($attr);
+   $self->set_result ($attr);
 }
 
 package Net::FCP::Txn::GenerateCHK;
@@ -422,7 +452,7 @@ use base Net::FCP::Txn;
 sub rcv_success {
    my ($self, $attr) = @_;
 
-   $self->eof ($attr);
+   $self->set_result ($attr);
 }
 
 package Net::FCP::Txn::GenerateSVKPair;
@@ -432,7 +462,7 @@ use base Net::FCP::Txn;
 sub rcv_success {
    my ($self, $attr) = @_;
 
-   $self->eof ([$attr->{PublicKey}, $attr->{PrivateKey}]);
+   $self->set_result ([$attr->{PublicKey}, $attr->{PrivateKey}]);
 }
 
 package Net::FCP::Txn::InvertPrivateKey;
@@ -442,7 +472,7 @@ use base Net::FCP::Txn;
 sub rcv_success {
    my ($self, $attr) = @_;
 
-   $self->eof ($attr->{PublicKey});
+   $self->set_result ($attr->{PublicKey});
 }
 
 package Net::FCP::Txn::GetSize;
@@ -452,7 +482,28 @@ use base Net::FCP::Txn;
 sub rcv_success {
    my ($self, $attr) = @_;
 
-   $self->eof ($attr->{Length});
+   $self->set_result ($attr->{Length});
+}
+
+package Net::FCP::Txn::ClientGet;
+
+use base Net::FCP::Txn;
+
+sub rcv_data_found {
+   my ($self, $attr) = @_;
+
+   $self->{datalength} = hex $attr->{data_length};
+   $self->{metalength} = hex $attr->{meta_data_length};
+}
+
+sub eof {
+   my ($self) = @_;
+   #use PApp::Util; warn PApp::Util::dumpval $self;
+   my $data = delete $self->{data};
+   $self->set_result ([
+      (substr $data, 0, $self->{datalength}-$self->{metalength}),
+      (substr $data, $self->{datalength}-$self->{metalength}),
+   ]);
 }
 
 =back

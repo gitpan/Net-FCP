@@ -2,7 +2,7 @@
 
 use Net::FCP;
 
-my $fcp = new Net::FCP host => "10.9.0.31";
+my $fcp = new Net::FCP;
 
 my $nodehello = $fcp->client_hello;
 

@@ -22,7 +22,8 @@ WARNING
   THE Net::FCP CLASS
     $fcp = new Net::FCP [host => $host][, port => $port]
         Create a new virtual FCP connection to the given host and port
-        (default 127.0.0.1:8481).
+        (default 127.0.0.1:8481, or the environment variables "FREDHOST" and
+        "FREDPORT").
 
         Connections are virtual because no persistent physical connection is
         established. However, the existance of the node is checked by
@@ -37,8 +38,8 @@ WARNING
 
            {
              max_file_size => "5f5e100",
-             protocol => "1.2",
              node => "Fred,0.6,1.46,7050"
+             protocol => "1.2",
            }
 
     $txn = $fcp->txn_client_info
@@ -46,27 +47,27 @@ WARNING
         Executes a ClientInfo request and returns it's results.
 
            {
-             max_file_size => "5f5e100",
-             datastore_max => "2540be400",
-             node_port => 369,
-             java_name => "Java HotSpot(_T_M) Server VM",
-             operating_system_version => "2.4.20",
-             estimated_load => 52,
-             free_memory => "5cc0148",
-             datastore_free => "5ce03400",
-             node_address => "1.2.3.4",
              active_jobs => "1f",
              allocated_memory => "bde0000",
              architecture => "i386",
-             routing_time => "a5",
-             least_recent_timestamp => "f41538b878",
              available_threads => 17,
+             datastore_free => "5ce03400",
+             datastore_max => "2540be400",
              datastore_used => "1f72bb000",
-             java_version => "Blackdown-1.4.1-01",
+             estimated_load => 52,
+             free_memory => "5cc0148",
              is_transient => "false",
-             operating_system => "Linux",
+             java_name => "Java HotSpot(_T_M) Server VM",
              java_vendor => "http://www.blackdown.org/",
+             java_version => "Blackdown-1.4.1-01",
+             least_recent_timestamp => "f41538b878",
+             max_file_size => "5f5e100",
              most_recent_timestamp => "f77e2cc520"
+             node_address => "1.2.3.4",
+             node_port => 369,
+             operating_system => "Linux",
+             operating_system_version => "2.4.20",
+             routing_time => "a5",
            }
 
     $txn = $fcp->txn_generate_chk ($metadata, $data)
@@ -99,7 +100,20 @@ WARNING
 
         UNTESTED.
 
-    MISSING: ClientGet, ClientPut
+    $txn = $fcp->txn_client_get ($uri [, $htl = 15 [, $removelocal = 0]])
+    ($data, $metadata) = @{ $fcp->client_get ($uri, $htl, $removelocal)
+        Fetches a (small, as it should fit into memory) file from freenet.
+
+        Due to the overhead, a better method to download big fiels should be
+        used.
+
+          my ($data, $meta) = @{
+             $fcp->client_get (
+                "freenet:CHK@hdXaxkwZ9rA8-SidT0AN-bniQlgPAwI,XdCDmBuGsd-ulqbLnZ8v~w"
+             )
+          };
+
+    MISSING: ClientPut
 
   THE Net::FCP::Txn CLASS
     All requests (or transactions) are executed in a asynchroneous way (LIE:
@@ -117,7 +131,7 @@ WARNING
     $result = $txn->result
         Waits until a result is available and then returns it.
 
-        This waiting is (depending on your event modul) not very efficient,
+        This waiting is (depending on your event model) not very efficient,
         as it is done outside the "mainloop".
 
 SEE ALSO

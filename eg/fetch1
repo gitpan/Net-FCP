@@ -1,0 +1,15 @@
+#!/usr/bin/perl
+
+use Net::FCP;
+
+# fetch a single (small) keyand output it to stdout
+
+my $fcp = new Net::FCP;
+
+my ($data, $meta) = @{ $fcp->client_get ("freenet:$ARGV[0]", $ARGV[1]) };
+
+print $meta;
+print "=============================================================================\n";
+print $data;
+
+
