@@ -33,7 +33,7 @@ package Net::FCP;
 use Carp;
 use IO::Socket::INET;
 
-$VERSION = 0.02;
+$VERSION = 0.03;
 
 sub event_reg_cb {
    my ($obj) = @_;
@@ -72,6 +72,69 @@ sub tolc($) {
    local $_ = shift;
    s/(?<=[a-z])(?=[A-Z])/_/g;
    lc $_;
+}
+
+=item $meta = Net::FCP::parse_metadata $string
+
+Parse a metadata string and return it.
+
+The metadata will be a hashref with key C<version> (containing
+the mandatory version header entries).
+
+All other headers are represented by arrayrefs (they can be repeated).
+
+Since this is confusing, here is a rather verbose example of a parsed
+manifest:
+
+   (
+      version => { revision => 1 },
+      document => [
+                    {
+                      "info.format" => "image/jpeg",
+                      name => "background.jpg",
+                      "redirect.target" => "freenet:CHK\@ZcagI,ra726bSw"
+                    },
+                    {
+                      "info.format" => "text/html",
+                      name => ".next",
+                      "redirect.target" => "freenet:SSK\@ilUPAgM/TFEE/3"
+                    },
+                    {
+                      "info.format" => "text/html",
+                      "redirect.target" => "freenet:CHK\@8M8Po8ucwI,8xA"
+                    }
+                  ]
+   )
+
+=cut
+
+sub parse_metadata {
+   my $meta;
+
+   my $data = shift;
+   if ($data =~ /^Version\015?\012/gc) {
+      my $hdr = $meta->{version} = {};
+
+      for (;;) {
+         while ($data =~ /\G([^=\015\012]+)=([^\015\012]*)\015?\012/gc) {
+            my ($k, $v) = ($1, $2);
+            $hdr->{tolc $k} = $v;
+         }
+
+         if ($data =~ /\GEndPart\015?\012/gc) {
+         } elsif ($data =~ /\GEnd\015?\012/gc) {
+            last;
+         } elsif ($data =~ /\G([A-Za-z0-9.\-]+)\015?\012/gcs) {
+            push @{$meta->{tolc $1}}, $hdr = {};
+         } elsif ($data =~ /\G(.*)/gcs) {
+            die "metadata format error ($1)";
+         }
+      }
+   }
+
+   #$meta->{tail} = substr $data, pos $data;
+
+   $meta;
 }
 
 =item $fcp = new Net::FCP [host => $host][, port => $port]
@@ -189,7 +252,7 @@ Creates a new CHK, given the metadata and data. UNTESTED.
 _txn generate_chk => sub {
    my ($self, $metadata, $data) = @_;
 
-   $self->txn (generate_chk => data => "$data$metadata", meta_data_length => length $metadata);
+   $self->txn (generate_chk => data => "$data$metadata", metadata_length => length $metadata);
 };
 
 =item $txn = $fcp->txn_generate_svk_pair
@@ -250,13 +313,15 @@ _txn get_size => sub {
 
 =item $txn = $fcp->txn_client_get ($uri [, $htl = 15 [, $removelocal = 0]])
 
-=item ($data, $metadata) = @{ $fcp->client_get ($uri, $htl, $removelocal)
+=item ($metadata, $data) = @{ $fcp->client_get ($uri, $htl, $removelocal)
 
-Fetches a (small, as it should fit into memory) file from freenet.
+Fetches a (small, as it should fit into memory) file from
+freenet. C<$meta> is the metadata (as returned by C<parse_metadata> or
+C<undef>).
 
-Due to the overhead, a better method to download big fiels should be used.
+Due to the overhead, a better method to download big files should be used.
 
-  my ($data, $meta) = @{
+  my ($meta, $data) = @{
      $fcp->client_get (
         "freenet:CHK@hdXaxkwZ9rA8-SidT0AN-bniQlgPAwI,XdCDmBuGsd-ulqbLnZ8v~w"
      )
@@ -357,7 +422,7 @@ sub fh_ready {
             }
          } elsif ($self->{buf} =~ s/^DataChunk\015?\012Length=([0-9a-fA-F]+)\015?\012Data\015?\012//) {
             $self->{datalen} = hex $1;
-         } elsif ($self->{buf} =~ s/^([a-zA-Z]+)\015?\012(.*?)\015?\012EndMessage\015?\012//s) {
+         } elsif ($self->{buf} =~ s/^([a-zA-Z]+)\015?\012(?:(.+?)\015?\012)?EndMessage\015?\012//s) {
             $self->rcv ($1, {
                   map { my ($a, $b) = split /=/, $_, 2; ((Net::FCP::tolc $a), $b) }
                       split /\015?\012/, $2
@@ -493,17 +558,20 @@ sub rcv_data_found {
    my ($self, $attr) = @_;
 
    $self->{datalength} = hex $attr->{data_length};
-   $self->{metalength} = hex $attr->{meta_data_length};
+   $self->{metalength} = hex $attr->{metadata_length};
+}
+
+sub rcv_restarted {
+   # nop, maybe feedback
 }
 
 sub eof {
    my ($self) = @_;
-   #use PApp::Util; warn PApp::Util::dumpval $self;
+
    my $data = delete $self->{data};
-   $self->set_result ([
-      (substr $data, 0, $self->{datalength}-$self->{metalength}),
-      (substr $data, $self->{datalength}-$self->{metalength}),
-   ]);
+   my $meta = Net::FCP::parse_metadata substr $data, 0, $self->{metalength}, "";
+
+   $self->set_result ([$meta, $data]);
 }
 
 =back

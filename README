@@ -20,6 +20,38 @@ WARNING
     mechanism is fully pluggable).
 
   THE Net::FCP CLASS
+    $meta = Net::FCP::parse_metadata $string
+        Parse a metadata string and return it.
+
+        The metadata will be a hashref with key "version" (containing the
+        mandatory version header entries).
+
+        All other headers are represented by arrayrefs (they can be
+        repeated).
+
+        Since this is confusing, here is a rather verbose example of a
+        parsed manifest:
+
+           (
+              version => { revision => 1 },
+              document => [
+                            {
+                              "info.format" => "image/jpeg",
+                              name => "background.jpg",
+                              "redirect.target" => "freenet:CHK\@ZcagI,ra726bSw"
+                            },
+                            {
+                              "info.format" => "text/html",
+                              name => ".next",
+                              "redirect.target" => "freenet:SSK\@ilUPAgM/TFEE/3"
+                            },
+                            {
+                              "info.format" => "text/html",
+                              "redirect.target" => "freenet:CHK\@8M8Po8ucwI,8xA"
+                            }
+                          ]
+           )
+
     $fcp = new Net::FCP [host => $host][, port => $port]
         Create a new virtual FCP connection to the given host and port
         (default 127.0.0.1:8481, or the environment variables "FREDHOST" and
@@ -101,13 +133,14 @@ WARNING
         UNTESTED.
 
     $txn = $fcp->txn_client_get ($uri [, $htl = 15 [, $removelocal = 0]])
-    ($data, $metadata) = @{ $fcp->client_get ($uri, $htl, $removelocal)
+    ($metadata, $data) = @{ $fcp->client_get ($uri, $htl, $removelocal)
         Fetches a (small, as it should fit into memory) file from freenet.
+        $meta is the metadata (as returned by "parse_metadata" or "undef").
 
-        Due to the overhead, a better method to download big fiels should be
+        Due to the overhead, a better method to download big files should be
         used.
 
-          my ($data, $meta) = @{
+          my ($meta, $data) = @{
              $fcp->client_get (
                 "freenet:CHK@hdXaxkwZ9rA8-SidT0AN-bniQlgPAwI,XdCDmBuGsd-ulqbLnZ8v~w"
              )

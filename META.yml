@@ -1,6 +1,6 @@
 #XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
 name:         Net-FCP
-version:      0.02
+version:      0.03
 version_from: FCP.pm
 installdirs:  site
 requires:
