@@ -10,10 +10,15 @@ WriteMakefile(
 	           },
     NAME => "Net::FCP",
     VERSION_FROM => "FCP.pm",
-    'PM'	=> {
+    EXE_FILES    => [qw(bin/fmd)],
+    PM           => {
     		    'FCP.pm'		=> '$(INST_LIBDIR)/FCP.pm',
+    		    'Util.pm'		=> '$(INST_LIBDIR)/FCP/Util.pm',
     		    'Event/Event.pm'	=> '$(INST_LIBDIR)/FCP/Event/Event.pm',
     		    'Event/Coro.pm'	=> '$(INST_LIBDIR)/FCP/Event/Coro.pm',
+    		    'Event/Glib.pm'	=> '$(INST_LIBDIR)/FCP/Event/Glib.pm',
+    		    'Event/Tk.pm'	=> '$(INST_LIBDIR)/FCP/Event/Tk.pm',
+    		    #'Key/CHK.pm'	=> '$(INST_LIBDIR)/FCP/Key/CHK.pm',
     		   },
 );
 

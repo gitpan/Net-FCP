@@ -33,6 +33,10 @@ WARNING
 
     You should specify the event module to use only in the main program.
 
+    If no event model has been specified, FCP tries to autodetect it on
+    first use (e.g. first transaction), in this order: Coro, Event, Glib,
+    Tk.
+
   FREENET BASICS
     Ok, this section will not explain any freenet basics to you, just some
     problems I found that you might want to avoid:
@@ -55,15 +59,17 @@ WARNING
         Parse a metadata string and return it.
 
         The metadata will be a hashref with key "version" (containing the
-        mandatory version header entries).
+        mandatory version header entries) and key "raw" containing the
+        original metadata string.
 
         All other headers are represented by arrayrefs (they can be
         repeated).
 
-        Since this is confusing, here is a rather verbose example of a
-        parsed manifest:
+        Since this description is confusing, here is a rather verbose
+        example of a parsed manifest:
 
            (
+              raw => "Version...",
               version => { revision => 1 },
               document => [
                             {
@@ -154,9 +160,10 @@ WARNING
              routing_time => "a5",
            }
 
-    $txn = $fcp->txn_generate_chk ($metadata, $data)
-    $uri = $fcp->generate_chk ($metadata, $data)
-        Creates a new CHK, given the metadata and data. UNTESTED.
+    $txn = $fcp->txn_generate_chk ($metadata, $data[, $cipher])
+    $uri = $fcp->generate_chk ($metadata, $data[, $cipher])
+        Calculcates a CHK, given the metadata and data. $cipher is either
+        "Rijndael" or "Twofish", with the latter being the default.
 
     $txn = $fcp->txn_generate_svk_pair
     ($public, $private) = @{ $fcp->generate_svk_pair }

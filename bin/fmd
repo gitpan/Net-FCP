@@ -1,6 +1,87 @@
 #!/opt/bin/perl
 
-use Net::FCP qw(event=Coro);
+=head1 fmd - the freenet mass downloader
+
+Fmd is at a very early stage of development, as I am learning the basics
+of freenet myself.
+
+However, I use it in production, and since it verifies everything it
+decodes etc., it seems to be quite safe to use, if you know how to debug
+perl :)
+
+=head2 FEATURES
+
+ - decoding is done "in place", i.e. all non-checkblock blocks are
+   stored in-place and will not be moved, only checkblocks will
+   be moved to their final position in the file before decoding.
+ - high resistance against failures of fred or fmd
+ - extremely persistent retry behaviour - there is no such thing
+   as a permanent failure.
+ - handles hundreds of simultaneous downloads with grace.
+
+=head2 ENVIRONMENT
+
+Set FMD_HOME to a directory (default ~/fmd) where fmd will store it's files.
+
+The subdirectory db will contain a database (soon to go away), while tmp
+contains queue files and partial splitfiles. All finished files will be
+moved to the done subdir.
+
+FREDHOST and FREDPORT do the obvious. Fix these docs if you disagree.
+
+Also edit the fmd executable for the number of threads and other
+non-useful constants. The default number (200) works for me, probably not
+for you.
+
+=head2 COMMANDS
+
+=over 4
+
+=item CHK@... (space or "/") filename
+
+Just pasting a CHK and a filename sperated by one or more spaces or
+slashes will add files to the queue. The line can have leading garbage,
+i.e. you can paste full uris.
+
+=item <attached>...</attached>
+
+Will add frosts mentally deranged pseudo-xml format, soon to be replaced
+by something even more horrible.
+
+=item l
+
+List all jobs by number.
+
+=item <number> (optionally trailing command)
+
+Selects the job with the given number for further comamnds that require a current job.
+
+=item s
+
+Show the current job. Bot useful right now.
+
+=item k
+
+Kill the current job. This will keep the temp. file around. Sorry. (But it
+could be used to reconstruct the download.. hmm..)
+
+=item pri<number>
+
+Set the current job priority to <pri>. The default is 1. A job with twice
+the priority will (on average) get twice as many requests.
+
+The useful range is probably 0..1000, but be careful and limit yourself to
+small values (<5), otherwise your other downloads might starve!
+
+=item q
+
+Kill the command prompt. Yupp.
+
+=back
+
+=cut
+
+use Net::FCP;
 use BerkeleyDB;
 use Storable;
 use Time::HiRes;
@@ -13,11 +94,13 @@ use Digest::SHA1;
 use Crypt::Twofish2;
 use Algorithm::FEC;
 use Digest::SHA1;
+use Net::FCP::Util;
 
 $|=1;
 
 our $MAX_TXN = 200; # use max. this many transactions in parallel
-our @HTL = (5, 10, 15, 20, 22, 24, (25) x 10);
+our @HTL = (0, 15, 25, 5, 25, 3, 25, 15, (25) x 5);
+our $VERIFY_CHK = 1; # verify all blocks, again and again (only useful to debugging).
 our $FMD_HOME = $ENV{FMD_HOME} || "$ENV{HOME}/fmd";
 
 our $FCP = new Net::FCP;
@@ -68,17 +151,29 @@ sub push_key {
       }
    }
 
-   job->new ($key, $title);
+   my $job = job->new ($key, $title);
+   warn "added as job $job->{id}\n";
+   $job;
 }
 
 sub cmdline {
    my ($i, $o) = @_;
+
    async {
+      my $job;
       while (print $o "> " and defined ($_ = <$i>)) {
          chomp;
-         if (/(CHK\@[a-zA-Z0-9,~\-]{54})[\/ ]+(.*)$/) {
-         print "pushkey($1)($2)\n";
-            push_key $1, $2;
+         if (/<attached>(.*) \* (CHK[^<]+)<\/attached>/) {
+            $job = push_key $2, $1;
+         } elsif (/(CHK\@[a-zA-Z0-9,~\-]{54})[\/ ]+(.*)$/) {
+            $job = push_key $1, $2;
+         } elsif (s/^(\d+)//) {
+            if ($job = $job{$1}) {
+               print $o delete $job->{_log};
+               if ($job->{_input}) {
+               }
+            }
+            redo;
          } elsif (/^q/) {
             close $i;
             close $o;
@@ -86,21 +181,17 @@ sub cmdline {
             for my $job (sort { $a->{id} <=> $b->{id} } values %job) {
                print $o "$_ $job->{id}: $job->{uri} $job->{title} $job->{status}\n";
             }
-         } elsif (/^s(\d+)/) {
-            if (my $job = $job{$1}) {
-               print $o $job->show;
+         } elsif (/^pri\s*(\d+)/) {
+            if ($job) {
+               $job->{pri} = $1;
+               $job->save;
             }
-         } elsif (/^k\s*(\d+)/) {
-            if (my $job = $job{$1}) {
-               warn $job;
-               $job->kill;
-            }
-         } elsif (/^(\d+)/) {
-            if (my $job = $job{$1}) {
-               print $o delete $job->{_log};
-               if ($job->{_input}) {
-               }
-            }
+         } elsif (/^s$/) {
+            print $o $job->show if $job;
+         } elsif (/^k$/) {
+            $job->kill if $job;
+         } elsif (/\S/) {
+            #
          } else {
             print $o "?\n";
          }
@@ -211,10 +302,15 @@ sub fetch_uri {
    my $data = $::DB_CACHE{$sha1};
    # data should be encrypted using the uri as key
    if (defined $data) {
-      return @{Storable::thaw ($data)}[1,2];
-   } else {
+      my ($meta, $dat) = return @{Storable::thaw ($data)}[1,2];
+      if ((defined $dat) and (length $dat)) {
+         return ($meta, $dat);
+      }
+   }
+
+   for(my $count = 1; ; $count += 0.3) {
       for my $htl (@HTL) {
-         txn_begin $pri / $htl;
+         txn_begin $pri / ($htl + $count);
          my $sig = new Coro::Signal;
          my ($meta, $data) = eval { @{ $FCP->client_get ($uri, $htl) } };
          txn_end;
@@ -231,13 +327,15 @@ sub fetch_uri {
                die;
             }
          }
-         $::DB_CACHE{$sha1} = Storable::nfreeze [time, $meta, $data];
-         $DB_ENV->txn_checkpoint (0, 0);
-         return ($meta, $data);
+         if (defined $data) {
+            $::DB_CACHE{$sha1} = Storable::nfreeze [time, $meta, $data];
+            $DB_ENV->txn_checkpoint (0, 0);
+            return ($meta, $data);
+         }
       }
    }
 
-   return ();
+   die;
 }
 
 sub log {
@@ -280,7 +378,7 @@ sub start {
    my ($self) = @_;
    $job{$self->{id} = ++$id} = $self;
 
-   #$self->{pri} = 10000 if $self->{id} == 17;#d#
+   #$self->{pri} = 10000 if $self->{id} >= 15;#d#
    $self->{pri} ||= 1;
 
    if (0) {
@@ -405,10 +503,10 @@ sub start {
                for my $id (0 .. $#$blk) {
                   my $blk = $blk->[$id];
 
-                  next if $txn[$id] || $blk->{done} || $blk->{seg}{todo} == $blk->{seg}{done};
+                  next if $txn[$id] || $blk->{done} || $blk->{seg}{todo} <= $blk->{seg}{done};
 
-                  my $htl = $blk->{htl} >= @HTL ? 25 : $HTL[$blk->{htl}++];
-                  my $pri = $self->{pri} * ($blk->{seg}{done} + 1) / ($blk->{seg}{todo} * $htl);
+                  my $htl = $HTL[$blk->{htl}++ % @HTL];
+                  my $pri = $self->{pri} * ($blk->{seg}{done} + 1) / ($blk->{seg}{todo} * ($htl + 1));
 
                   #warn "GET<$blk->{uri}, $htl>\n";
                   txn_begin $pri;
@@ -424,18 +522,22 @@ sub start {
                         $blk->{size} == length $data
                            or die sprintf "block $id expected size %d, got %d\n", $blk->{size}, length $data;
 
-                        sysseek $fh, $blk->{offset}, 0;
-                        syswrite $fh, $data;
+                        $blk->{offset} == sysseek $fh, $blk->{offset}, 0
+                           or die "sysseek: $!";
+                        (length $data) == (syswrite $fh, $data)
+                           or die "unable to write chunk to disk, not setting valid flag";
                         IO::Handle::sync $fh;
-                        $self->log ("got block $seg->{id}.$id ($seg->{done}/$seg->{todo}) at htl $htl and pri $pri");
+
+                        $blk->{done} = 1;
+                        $blk->{meta} = $meta->{raw} if length $meta->{raw};#d#
+                        $seg->{done}++;
+                        $self->save;
 
                         $::htl_sum += $htl;
                         $::htl_cnt++;
-                        printf "$self->{id}: got block $seg->{id}.$id ($seg->{done}/$seg->{todo}) at htl $htl (%f) and pri $pri\n", $::htl_sum / $::htl_cnt;
 
-                        $blk->{done} = 1;
-                        $seg->{done}++;
-                        $self->save;
+                        $self->log ("got block $seg->{id}.$id ($seg->{done}/$seg->{todo}) at htl $htl and pri $pri");
+                        printf "$self->{id}: got block $seg->{id}.$id ($seg->{done}/$seg->{todo}) at htl $htl (%f) and pri $pri\n", $::htl_sum / $::htl_cnt;
                      } else {
                         ++$fail;
                      }
@@ -446,14 +548,43 @@ sub start {
                }
 
                for my $seg (@segments) {
-                  if ($seg->{done} == $seg->{todo} && !$seg->{finished}) {
-                     $seg->{finished}++;
-                     $segments--;
+                  if ($seg->{done} >= $seg->{todo} && !$seg->{finished}) {
 
                      warn "segment done, cancelling segment $seg->{id}\n";
-                     for my $id (0.. $#$blk) {
-                        next unless $seg == $blk->[$id]{seg};
-                        $txn[$id]->cancel if $txn[$id];
+                     for my $id (@{$seg->{blk}}) {
+                        (delete $txn[$id])->cancel if $txn[$id];
+                     }
+
+                     warn "verifying segment $seg->{id}\n";
+                     for my $id (@{$seg->{blk}}) {
+                        my $blk = $blk->[$id];
+                        if ($blk->{done}) {
+                           print "V";#d#
+                           sysseek $fh, $blk->{offset}, 0;
+                           sysread $fh, my $buf, $blk->{size};
+
+                           Coro::cede;
+
+                           my $k1 = Net::FCP::Util::extract_chk_key $blk->{uri};
+                           my $k2 = Net::FCP::Util::generate_chk_key $blk->{meta}, $buf;
+
+                           if ($k1 ne $k2) {
+                              warn sprintf "$self->{title} block $id BROKEN (%s != %s)",
+                                           (unpack "H*", $k1), (unpack "H*", $k2);
+                              $blk->{done} = 0;
+                              $seg->{done}--;
+                              $self->save;
+                           }
+                        }
+                     }
+                     print "\n";
+
+                     if ($seg->{done} >= $seg->{todo} && !$seg->{finished}) {
+                        warn "verified segment OK $seg->{id}\n";
+                        $seg->{finished}++;
+                        $segments--;
+                     } else {
+                        warn "verified segment NOT OK $seg->{id}\n";
                      }
                   }
                }
@@ -515,12 +646,12 @@ sub start {
             if (exists $meta->{document}[0]{info}{checksum}
                 and $meta->{document}[0]{info}{checksum} ne $sha1->hexdigest) {
                warn "META: $meta->{document}[0]{info}{checksum} and real checksum for $filesize DIFFER\n";
-               exit (77);
+               $self->feedback ("CHECKSUM ERROR");
+               terminate;
             }
 
             truncate $fh, $filesize;
             sysseek $fh, 0, 0;
-
          } else {
             $self->log ("splitfile algo '$splitfile->{algo_name}' unknown");
             $self->feedback ("algo unknown");

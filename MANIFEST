@@ -4,8 +4,11 @@ MANIFEST
 COPYING
 Makefile.PL
 FCP.pm
+Util.pm
 Event/Event.pm
 Event/Coro.pm
+Event/Glib.pm
+Event/Tk.pm
 t/00_load.t
 eg/simple
 eg/fetch1

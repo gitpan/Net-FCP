@@ -37,6 +37,9 @@ C<event=Glib> etc.
 
 You should specify the event module to use only in the main program.
 
+If no event model has been specified, FCP tries to autodetect it on first
+use (e.g. first transaction), in this order: Coro, Event, Glib, Tk.
+
 =head2 FREENET BASICS
 
 Ok, this section will not explain any freenet basics to you, just some
@@ -71,12 +74,11 @@ package Net::FCP;
 
 use Carp;
 
-$VERSION = 0.07;
+$VERSION = 0.08;
 
 no warnings;
 
 our $EVENT = Net::FCP::Event::Auto::;
-$EVENT = Net::FCP::Event::Event;#d#
 
 sub import {
    shift;
@@ -84,9 +86,9 @@ sub import {
    for (@_) {
       if (/^event=(\w+)$/) {
          $EVENT = "Net::FCP::Event::$1";
+         eval "require $EVENT";
       }
    }
-   eval "require $EVENT";
    die $@ if $@;
 }
 
@@ -107,15 +109,17 @@ sub tolc($) {
 
 Parse a metadata string and return it.
 
-The metadata will be a hashref with key C<version> (containing
-the mandatory version header entries).
+The metadata will be a hashref with key C<version> (containing the
+mandatory version header entries) and key C<raw> containing the original
+metadata string.
 
 All other headers are represented by arrayrefs (they can be repeated).
 
-Since this is confusing, here is a rather verbose example of a parsed
-manifest:
+Since this description is confusing, here is a rather verbose example of a
+parsed manifest:
 
    (
+      raw => "Version...",
       version => { revision => 1 },
       document => [
                     {
@@ -138,9 +142,9 @@ manifest:
 =cut
 
 sub parse_metadata {
-   my $meta;
-
    my $data = shift;
+   my $meta = { raw => $data };
+
    if ($data =~ /^Version\015?\012/gc) {
       my $hdr = $meta->{version} = {};
 
@@ -312,18 +316,22 @@ $txn->(client_info => sub {
    $self->txn ("client_info");
 });
 
-=item $txn = $fcp->txn_generate_chk ($metadata, $data)
+=item $txn = $fcp->txn_generate_chk ($metadata, $data[, $cipher])
 
-=item $uri = $fcp->generate_chk ($metadata, $data)
+=item $uri = $fcp->generate_chk ($metadata, $data[, $cipher])
 
-Creates a new CHK, given the metadata and data. UNTESTED.
+Calculcates a CHK, given the metadata and data. C<$cipher> is either
+C<Rijndael> or C<Twofish>, with the latter being the default.
 
 =cut
 
 $txn->(generate_chk => sub {
-   my ($self, $metadata, $data) = @_;
+   my ($self, $metadata, $data, $cipher) = @_;
 
-   $self->txn (generate_chk => data => "$metadata$data", metadata_length => length $metadata);
+   $self->txn (generate_chk =>
+                  data => "$metadata$data",
+                  metadata_length => length $metadata,
+                  cipher => $cipher || "Twofish");
 });
 
 =item $txn = $fcp->txn_generate_svk_pair
@@ -477,7 +485,7 @@ sub new {
    }
 
    if (defined $data) {
-      $attr .= "DataLength=" . (length $data) . "\012";
+      $attr .= sprintf "DataLength=%x\012", length $data;
       $data = "Data\012$data";
    } else {
       $data = "EndMessage\012";
@@ -494,10 +502,10 @@ sub new {
 
    $self->{sbuf} = 
       "\x00\x00\x00\x02"
-      . Net::FCP::touc $self->{type}
+      . (Net::FCP::touc $self->{type})
       . "\012$attr$data";
 
-   #$fh->shutdown (1); # freenet buggy?, well, it's java...
+   #shutdown $fh, 1; # freenet buggy?, well, it's java...
    
    $self->{fh} = $fh;
    
@@ -715,7 +723,7 @@ use base Net::FCP::Txn;
 sub rcv_success {
    my ($self, $attr) = @_;
 
-   $self->set_result ($attr);
+   $self->set_result ($attr->{uri});
 }
 
 package Net::FCP::Txn::GenerateSVKPair;
@@ -890,6 +898,38 @@ L<http://freenet.sf.net>.
  http://www.goof.com/pcg/marc/
 
 =cut
+
+package Net::FCP::Event::Auto;
+
+my @models = (
+      [Coro  => Coro::Event:: ],
+      [Event => Event::],
+      [Glib  => Glib:: ],
+      [Tk    => Tk::],
+);
+
+sub AUTOLOAD {
+   $AUTOLOAD =~ s/.*://;
+
+   for (@models) {
+      my ($model, $package) = @$_;
+      if (defined ${"$package\::VERSION"}) {
+         $EVENT = "Net::FCP::Event::$model";
+         eval "require $EVENT"; die if $@;
+         goto &{"$EVENT\::$AUTOLOAD"};
+      }
+   }
+
+   for (@models) {
+      my ($model, $package) = @$_;
+      $EVENT = "Net::FCP::Event::$model";
+      if (eval "require $EVENT") {
+         goto &{"$EVENT\::$AUTOLOAD"};
+      }
+   }
+
+   die "No event module selected for Net::FCP and autodetect failed. Install any of these: Coro, Event, Glib or Tk.";
+}
 
 1;
 
