@@ -46,12 +46,13 @@ You should specify the event module to use only in the main program.
 package Net::FCP;
 
 use Carp;
-use IO::Socket::INET;
 
-$VERSION = 0.04;
+$VERSION = 0.05;
+
+no warnings;
 
 our $EVENT = Net::FCP::Event::Auto::;
-$EVENT = Net::FCP::Event::Event::;#d#
+$EVENT = Net::FCP::Event::Event;#d#
 
 sub import {
    shift;
@@ -62,6 +63,7 @@ sub import {
       }
    }
    eval "require $EVENT";
+   die $@ if $@;
 }
 
 sub touc($) {
@@ -121,10 +123,16 @@ sub parse_metadata {
       for (;;) {
          while ($data =~ /\G([^=\015\012]+)=([^\015\012]*)\015?\012/gc) {
             my ($k, $v) = ($1, $2);
-            $hdr->{tolc $k} = $v;
+            my @p = split /\./, tolc $k, 3;
+
+            $hdr->{$p[0]}               = $v if @p == 1; # lamest code I ever wrote
+            $hdr->{$p[0]}{$p[1]}        = $v if @p == 2;
+            $hdr->{$p[0]}{$p[1]}{$p[3]} = $v if @p == 3;
+            die "FATAL: 4+ dot metadata"     if @p >= 4;
          }
 
          if ($data =~ /\GEndPart\015?\012/gc) {
+            # nop
          } elsif ($data =~ /\GEnd\015?\012/gc) {
             last;
          } elsif ($data =~ /\G([A-Za-z0-9.\-]+)\015?\012/gcs) {
@@ -156,10 +164,10 @@ sub new {
    my $self = bless { @_ }, $class;
 
    $self->{host} ||= $ENV{FREDHOST} || "127.0.0.1";
-   $self->{port} ||= $ENV{FREDPORt} || 8481;
+   $self->{port} ||= $ENV{FREDPORT} || 8481;
 
-   $self->{nodehello} = $self->client_hello
-      or croak "unable to get nodehello from node\n";
+   #$self->{nodehello} = $self->client_hello
+   #   or croak "unable to get nodehello from node\n";
 
    $self;
 }
@@ -172,6 +180,28 @@ sub progress {
 =item $txn = $fcp->txn(type => attr => val,...)
 
 The low-level interface to transactions. Don't use it.
+
+Here are some examples of using transactions:
+
+The blocking case, no (visible) transactions involved:
+
+   my $nodehello = $fcp->client_hello;
+
+A transaction used in a blocking fashion:
+   
+   my $txn = $fcp->txn_client_hello;
+   ...
+   my $nodehello = $txn->result;
+
+Or shorter:
+
+   my $nodehello = $fcp->txn_client_hello->result;
+
+Setting callbacks:
+
+   $fcp->txn_client_hello->cb(
+      sub { my $nodehello => $_[0]->result }
+   );
 
 =cut
 
@@ -340,7 +370,7 @@ Due to the overhead, a better method to download big files should be used.
 _txn client_get => sub {
    my ($self, $uri, $htl, $removelocal) = @_;
 
-   $self->txn (client_get => URI => $uri, hops_to_live => ($htl || 15), remove_local => $removelocal*1);
+   $self->txn (client_get => URI => $uri, hops_to_live => ($htl || 15), remove_local_key => $removelocal ? "true" : "false");
 };
 
 =item MISSING: ClientPut
@@ -364,6 +394,9 @@ The most interesting method is C<result>.
 
 package Net::FCP::Txn;
 
+use Fcntl;
+use Socket;
+
 =item new arg => val,...
 
 Creates a new C<Net::FCP::Txn> object. Not normally used.
@@ -373,6 +406,10 @@ Creates a new C<Net::FCP::Txn> object. Not normally used.
 sub new {
    my $class = shift;
    my $self = bless { @_ }, $class;
+
+   $self->{signal} = $EVENT->new_signal;
+
+   $self->{fcp}{txn}{$self} = $self;
 
    my $attr = "";
    my $data = delete $self->{attr}{data};
@@ -388,60 +425,101 @@ sub new {
       $data = "EndMessage\012";
    }
 
-   my $fh = new IO::Socket::INET
-      PeerHost => $self->{fcp}{host},
-      PeerPort => $self->{fcp}{port}
-      or Carp::croak "FCP::txn: unable to connect to $self->{fcp}{host}:$self->{fcp}{port}: $!\n";
-
+   socket my $fh, PF_INET, SOCK_STREAM, 0
+      or Carp::croak "unable to create new tcp socket: $!";
    binmode $fh, ":raw";
+   fcntl $fh, F_SETFL, O_NONBLOCK;
+   connect $fh, (sockaddr_in $self->{fcp}{port}, inet_aton $self->{fcp}{host})
+      and !$!{EWOULDBLOCK}
+      and !$!{EINPROGRESS}
+      and Carp::croak "FCP::txn: unable to connect to $self->{fcp}{host}:$self->{fcp}{port}: $!\n";
 
-   if (0) {
-      print
-         Net::FCP::touc $self->{type}, "\012",
-         $attr,
-         $data, "\012";
-   }
-
-   print $fh
-      "\x00\x00", "\x00\x02", # SESSID, PRESID
-      Net::FCP::touc $self->{type}, "\012",
-      $attr,
-      $data;
+   $self->{sbuf} = 
+      "\x00\x00\x00\x02"
+      . Net::FCP::touc $self->{type}
+      . "\012$attr$data";
 
    #$fh->shutdown (1); # freenet buggy?, well, it's java...
    
    $self->{fh} = $fh;
    
-   $EVENT->reg_r_cb ($self);
+   $self->{w} = $EVENT->new_from_fh ($fh)->cb(sub { $self->fh_ready_w })->poll(0, 1, 1);
    
    $self;
 }
 
-=item $userdata = $txn->userdata ([$userdata])
+=item $txn = $txn->cb ($coderef)
 
-Get and/or set user-specific data. This is useful in progress callbacks.
+Sets a callback to be called when the request is finished. The coderef
+will be called with the txn as it's sole argument, so it has to call
+C<result> itself.
+
+Returns the txn object, useful for chaining.
+
+Example:
+
+   $fcp->txn_client_get ("freenet:CHK....")
+      ->userdata ("ehrm")
+      ->cb(sub {
+         my $data = shift->result;
+      });
 
 =cut
 
-sub userdata($;$) {
-   my ($self, $data) = @_;
-   $self->{userdata} = $data if @_ >= 2;
-   $self->{userdata};
+sub cb($$) {
+   my ($self, $cb) = @_;
+   $self->{cb} = $cb;
+   $self;
 }
 
-sub fh_ready {
+=item $txn = $txn->userdata ([$userdata])
+
+Set user-specific data. This is useful in progress callbacks. The data can be accessed
+using C<< $txn->{userdata} >>.
+
+Returns the txn object, useful for chaining.
+
+=cut
+
+sub userdata($$) {
+   my ($self, $data) = @_;
+   $self->{userdata} = $data;
+   $self;
+}
+
+sub fh_ready_w {
+   my ($self) = @_;
+
+   my $len = syswrite $self->{fh}, $self->{sbuf};
+
+   if ($len > 0) {
+      substr $self->{sbuf}, 0, $len, "";
+      unless (length $self->{sbuf}) {
+         fcntl $self->{fh}, F_SETFL, 0;
+         $self->{w}->cb(sub { $self->fh_ready_r })->poll (1, 0, 1);
+      }
+   } elsif (defined $len) {
+      $self->throw (Net::FCP::Exception->new (network_error => { reason => "unexpected end of file while writing" }));
+   } else {
+      $self->throw (Net::FCP::Exception->new (network_error => { reason => "$!" }));
+   }
+}
+
+sub fh_ready_r {
    my ($self) = @_;
 
    if (sysread $self->{fh}, $self->{buf}, 65536, length $self->{buf}) {
       for (;;) {
          if ($self->{datalen}) {
+            #warn "expecting new datachunk $self->{datalen}, got ".(length $self->{buf})."\n";#d#
             if (length $self->{buf} >= $self->{datalen}) {
-               $self->rcv_data (substr $self->{buf}, 0, $self->{datalen}, "");
+               $self->rcv_data (substr $self->{buf}, 0, delete $self->{datalen}, "");
             } else {
                last;
             }
          } elsif ($self->{buf} =~ s/^DataChunk\015?\012Length=([0-9a-fA-F]+)\015?\012Data\015?\012//) {
             $self->{datalen} = hex $1;
+            #warn "expecting new datachunk $self->{datalen}\n";#d#
          } elsif ($self->{buf} =~ s/^([a-zA-Z]+)\015?\012(?:(.+?)\015?\012)?EndMessage\015?\012//s) {
             $self->rcv ($1, {
                   map { my ($a, $b) = split /=/, $_, 2; ((Net::FCP::tolc $a), $b) }
@@ -452,8 +530,6 @@ sub fh_ready {
          }
       }
    } else {
-      $EVENT->unreg_r_cb ($self);
-      delete $self->{fh};
       $self->eof;
    }
 }
@@ -480,22 +556,42 @@ sub rcv {
    }
 }
 
+# used as a default exception thrower
+sub rcv_throw_exception {
+   my ($self, $attr, $type) = @_;
+   $self->throw (new Net::FCP::Exception $type, $attr);
+}
+
+*rcv_failed       = \&Net::FCP::Txn::rcv_throw_exception;
+*rcv_format_error = \&Net::FCP::Txn::rcv_throw_exception;
+
 sub throw {
    my ($self, $exc) = @_;
 
    $self->{exception} = $exc;
    $self->set_result (1);
+   $self->eof; # must be last to avoid loops
 }
 
 sub set_result {
    my ($self, $result) = @_;
 
-   $self->{result} = $result unless exists $self->{result};
+   unless (exists $self->{result}) {
+      $self->{result} = $result;
+      $self->{cb}->($self) if exists $self->{cb};
+      $self->{signal}->send;
+   }
 }
 
 sub eof {
    my ($self) = @_;
-   $self->set_result;
+
+   delete $self->{w};
+   delete $self->{fh};
+
+   delete $self->{fcp}{txn}{$self};
+
+   $self->set_result; # just in case
 }
 
 sub progress {
@@ -515,16 +611,11 @@ is done outside the "mainloop".
 sub result {
    my ($self) = @_;
 
-   $EVENT->wait_event while !exists $self->{result};
+   $self->{signal}->wait while !exists $self->{result};
 
    die $self->{exception} if $self->{exception};
 
    return $self->{result};
-}
-
-sub DESTROY {
-   $EVENT->unreg_r_cb ($_[0]);
-   #$EVENT->unreg_w_cb ($_[0]);
 }
 
 package Net::FCP::Txn::ClientHello;
@@ -587,9 +678,30 @@ sub rcv_success {
    $self->set_result ($attr->{Length});
 }
 
-package Net::FCP::Txn::ClientGet;
+package Net::FCP::Txn::GetPut;
+
+# base class for get and put
 
 use base Net::FCP::Txn;
+
+*rcv_uri_error        = \&Net::FCP::Txn::rcv_throw_exception;
+*rcv_route_not_found  = \&Net::FCP::Txn::rcv_throw_exception;
+
+sub rcv_restarted {
+   my ($self, $attr, $type) = @_;
+
+   delete $self->{datalength};
+   delete $self->{metalength};
+   delete $self->{data};
+
+   $self->progress ($type, $attr);
+}
+
+package Net::FCP::Txn::ClientGet;
+
+use base Net::FCP::Txn::GetPut;
+
+*rcv_data_not_found = \&Net::FCP::Txn::rcv_throw_exception;
 
 sub rcv_data_found {
    my ($self, $attr, $type) = @_;
@@ -600,36 +712,38 @@ sub rcv_data_found {
    $self->{metalength} = hex $attr->{metadata_length};
 }
 
-sub rcv_route_not_found {
-   my ($self, $attr, $type) = @_;
+sub eof {
+   my ($self) = @_;
 
-   $self->throw (new Net::FCP::Exception $type, $attr);
+   if ($self->{datalength} == length $self->{data}) {
+      my $data = delete $self->{data};
+      my $meta = Net::FCP::parse_metadata substr $data, 0, $self->{metalength}, "";
+
+      $self->set_result ([$meta, $data]);
+   } elsif (!exists $self->{result}) {
+      $self->throw (Net::FCP::Exception->new (short_data => {
+                                                 reason   => "unexpected eof or internal node error",
+                                                 received => length $self->{data},
+                                                 expected => $self->{datalength},
+                                              }));
+   }
 }
 
-sub rcv_data_not_found {
-   my ($self, $attr, $type) = @_;
+package Net::FCP::Txn::ClientPut;
 
-   $self->throw (new Net::FCP::Exception $type, $attr);
-}
+use base Net::FCP::Txn::GetPut;
 
-sub rcv_format_error {
-   my ($self, $attr, $type) = @_;
+*rcv_size_error    = \&Net::FCP::Txn::rcv_throw_exception;
+*rcv_key_collision = \&Net::FCP::Txn::rcv_throw_exception;
 
-   $self->throw (new Net::FCP::Exception $type, $attr);
-}
-
-sub rcv_restarted {
+sub rcv_pending {
    my ($self, $attr, $type) = @_;
    $self->progress ($type, $attr);
 }
 
-sub eof {
-   my ($self) = @_;
-
-   my $data = delete $self->{data};
-   my $meta = Net::FCP::parse_metadata substr $data, 0, $self->{metalength}, "";
-
-   $self->set_result ([$meta, $data]);
+sub rcv_success {
+   my ($self, $attr, $type) = @_;
+   $self->set_result ($attr);
 }
 
 package Net::FCP::Exception;
@@ -642,7 +756,7 @@ use overload
 sub new {
    my ($class, $type, $attr) = @_;
 
-   bless [$type, { %$attr }], $class;
+   bless [Net::FCP::tolc $type, { %$attr }], $class;
 }
 
 =back

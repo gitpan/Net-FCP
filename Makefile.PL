@@ -13,6 +13,7 @@ WriteMakefile(
     'PM'	=> {
     		    'FCP.pm'		=> '$(INST_LIBDIR)/FCP.pm',
     		    'Event/Event.pm'	=> '$(INST_LIBDIR)/FCP/Event/Event.pm',
+    		    'Event/Coro.pm'	=> '$(INST_LIBDIR)/FCP/Event/Coro.pm',
     		   },
 );
 

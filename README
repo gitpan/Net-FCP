@@ -78,6 +78,28 @@ WARNING
     $txn = $fcp->txn(type => attr => val,...)
         The low-level interface to transactions. Don't use it.
 
+        Here are some examples of using transactions:
+
+        The blocking case, no (visible) transactions involved:
+
+           my $nodehello = $fcp->client_hello;
+
+        A transaction used in a blocking fashion:
+
+           my $txn = $fcp->txn_client_hello;
+           ...
+           my $nodehello = $txn->result;
+
+        Or shorter:
+
+           my $nodehello = $fcp->txn_client_hello->result;
+
+        Setting callbacks:
+
+           $fcp->txn_client_hello->cb(
+              sub { my $nodehello => $_[0]->result }
+           );
+
     $txn = $fcp->txn_client_hello
     $nodehello = $fcp->client_hello
         Executes a ClientHello request and returns it's results.
@@ -175,9 +197,26 @@ WARNING
     new arg => val,...
         Creates a new "Net::FCP::Txn" object. Not normally used.
 
-    $userdata = $txn->userdata ([$userdata])
-        Get and/or set user-specific data. This is useful in progress
-        callbacks.
+    $txn = $txn->cb ($coderef)
+        Sets a callback to be called when the request is finished. The
+        coderef will be called with the txn as it's sole argument, so it has
+        to call "result" itself.
+
+        Returns the txn object, useful for chaining.
+
+        Example:
+
+           $fcp->txn_client_get ("freenet:CHK....")
+              ->userdata ("ehrm")
+              ->cb(sub {
+                 my $data = shift->result;
+              });
+
+    $txn = $txn->userdata ([$userdata])
+        Set user-specific data. This is useful in progress callbacks. The
+        data can be accessed using "$txn->{userdata}".
+
+        Returns the txn object, useful for chaining.
 
     $result = $txn->result
         Waits until a result is available and then returns it.

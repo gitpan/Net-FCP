@@ -2,26 +2,52 @@ package Net::FCP::Event::Event;
 
 require Event;
 
-sub reg_r_cb {
-   my ($class, $obj) = @_;
-   require Event;
+sub new_from_fh {
+   my ($class, $fh) = @_;
+   bless \(my $x = Event->io (
+         fd   => $fh,
+         poll => 'e',
+         cb   => sub { die "no callback set for watcher" },
+      )), $class;
+}
 
-   $obj->{eventdata}[0] = Event->io (
-      fd   => $obj->{fh},
-      poll => 'r',
-      cb   => sub {
-         $obj->fh_ready;
-      },
+sub cb {
+   my ($self, $cb) = @_;
+   $$self->cb ($cb);
+   $self;
+}
+
+sub poll {
+   my ($self, $r, $w, $e) = @_;
+   $$self->poll (
+     ($r ? "r" : "") .
+     ($w ? "w" : "") .
+     ($e ? "e" : "")
    );
+   $self;
 }
 
-sub unreg_r_cb {
-   $_[1]{eventdata}[0]
-      and (delete $_[1]{eventdata}[0])->cancel;
+sub DESTROY {
+   my ($self) = @_;
+
+   $$self->cancel;
 }
 
-sub wait_event {
+#############
+
+sub new_signal {
+   my $class = shift;
+
+   bless \my $x, $class;
+}
+
+sub send {
+   # nop
+}
+
+sub wait {
    Event::one_event();
 }
 
 1;
+
