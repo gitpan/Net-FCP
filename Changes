@@ -1,5 +1,15 @@
 Revision history for Perl extension Net::FCP
 
+0.7  Tue May 18 15:44:46 CEST 2004
+	- major restructuring.
+	- handle key_collision just like successful insert,
+          but set the atribute key_collision on the returned
+          attributes.
+        - added Net::FCP::Metadata module, for further improvements
+          with metadata handling.
+        - added Net::FCP::Key::SSK.
+        - many documentation fixes/improvements.
+
 0.6  Thu May 13 23:42:33 CEST 2004
 	- many bugfixes (most noteworthy: client_put works now).
         - progress callback.

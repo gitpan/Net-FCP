@@ -19,12 +19,14 @@ WriteMakefile(
                     },
     PM           => {
     		    'FCP.pm'		=> '$(INST_LIBDIR)/FCP.pm',
-    		    'Util.pm'		=> '$(INST_LIBDIR)/FCP/Util.pm',
-    		    'Event/Event.pm'	=> '$(INST_LIBDIR)/FCP/Event/Event.pm',
-    		    'Event/Coro.pm'	=> '$(INST_LIBDIR)/FCP/Event/Coro.pm',
-    		    'Event/Glib.pm'	=> '$(INST_LIBDIR)/FCP/Event/Glib.pm',
-    		    'Event/Tk.pm'	=> '$(INST_LIBDIR)/FCP/Event/Tk.pm',
-    		    #'Key/CHK.pm'	=> '$(INST_LIBDIR)/FCP/Key/CHK.pm',
+    		    'FCP/Util.pm'	=> '$(INST_LIBDIR)/FCP/Util.pm',
+    		    'FCP/Metadata.pm'	=> '$(INST_LIBDIR)/FCP/Metadata.pm',
+    		    'FCP/Event/Event.pm'=> '$(INST_LIBDIR)/FCP/Event/Event.pm',
+    		    'FCP/Event/Coro.pm'	=> '$(INST_LIBDIR)/FCP/Event/Coro.pm',
+    		    'FCP/Event/Glib.pm'	=> '$(INST_LIBDIR)/FCP/Event/Glib.pm',
+    		    'FCP/Event/Tk.pm'	=> '$(INST_LIBDIR)/FCP/Event/Tk.pm',
+    		    'FCP/Key/CHK.pm'	=> '$(INST_LIBDIR)/FCP/Key/CHK.pm',
+    		    'FCP/Key/SSK.pm'	=> '$(INST_LIBDIR)/FCP/Key/SSK.pm',
     		   },
 );
 

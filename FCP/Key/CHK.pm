@@ -14,8 +14,6 @@ Net::FCP::Key::CHK - manage CHK keys.
 
 =head1 DESCRIPTION
 
-=back
-
 =head2 THE Net::FCP::Key::CHK CLASS
 
 =over 4
@@ -47,7 +45,7 @@ sub new {
    bless { }, $class;
 }
 
-=item my $key = new_from_data Net::FCP::Key::CHK $metadata, $data, $cipher;
+=item my $key = new_from_data Net::FCP::Key::CHK $metadata, $data[, $cipher];
 
 Generate a CHK from the given data and metadata strings.
 

@@ -21,6 +21,50 @@ use MIME::Base64 ();
 
 no warnings;
 
+use base Exporter::;
+
+@EXPORT_OK = qw(tolc touc xeh);
+
+=item touc $string
+
+Returns the uppercased version of the given identifier. Used internally to
+map from e.g. URIError/KeyCollision to the form used in this module, i.e.
+uri_error/key_collision etc.
+
+=cut
+
+sub touc($) {
+   local $_ = shift;
+   1 while s/((?:^|_)(?:svk|chk|uri)(?:_|$))/\U$1/;
+   s/(?:^|_)(.)/\U$1/g;
+   $_;
+}
+
+=item tolc $string
+
+Returns the lowercased version of the given identifier. See C<touc>.
+
+=cut
+
+sub tolc($) {
+   local $_ = shift;
+   1 while s/(SVK|CHK|URI)([^_])/$1\_$2/i;
+   1 while s/([^_])(SVK|CHK|URI)/$1\_$2/i;
+   s/(?<=[a-z])(?=[A-Z])/_/g;
+   lc $_;
+}
+
+=item xeh $number
+
+The opposite of C<hex>, i.e. returns the the number as hex string. Mainly
+useful due to it's prototype of C<$>.
+
+=cut
+
+sub xeh($) {
+   sprintf "%x", $_[0];
+}
+
 =item log2 $num[, $minlog]
 
 Calculate the (integer) log2 of a number, rounded up. If C<$minlog> is

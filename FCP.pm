@@ -74,9 +74,12 @@ package Net::FCP;
 
 use Carp;
 
-$VERSION = 0.6;
+$VERSION = 0.7;
 
 no warnings;
+
+use Net::FCP::Metadata;
+use Net::FCP::Util qw(tolc touc xeh);
 
 our $EVENT = Net::FCP::Event::Auto::;
 
@@ -91,145 +94,6 @@ sub import {
    }
    die $@ if $@;
 }
-
-sub touc($) {
-   local $_ = shift;
-   1 while s/((?:^|_)(?:svk|chk|uri)(?:_|$))/\U$1/;
-   s/(?:^|_)(.)/\U$1/g;
-   $_;
-}
-
-sub tolc($) {
-   local $_ = shift;
-   1 while s/(SVK|CHK|URI)([^_])/$1\_$2/i;
-   1 while s/([^_])(SVK|CHK|URI)/$1\_$2/i;
-   s/(?<=[a-z])(?=[A-Z])/_/g;
-   lc $_;
-}
-
-# the opposite of hex
-sub xeh($) {
-   sprintf "%x", $_[0];
-}
-
-=item $meta = Net::FCP::parse_metadata $string
-
-Parse a metadata string and return it.
-
-The metadata will be a hashref with key C<version> (containing the
-mandatory version header entries) and key C<raw> containing the original
-metadata string.
-
-All other headers are represented by arrayrefs (they can be repeated).
-
-Since this description is confusing, here is a rather verbose example of a
-parsed manifest:
-
-   (
-      raw => "Version...",
-      version => { revision => 1 },
-      document => [
-                    {
-                      info => { format" => "image/jpeg" },
-                      name => "background.jpg",
-                      redirect => { target => "freenet:CHK\@ZcagI,ra726bSw" },
-                    },
-                    {
-                      info => { format" => "text/html" },
-                      name => ".next",
-                      redirect => { target => "freenet:SSK\@ilUPAgM/TFEE/3" },
-                    },
-                    {
-                      info => { format" => "text/html" },
-                      redirect => { target => "freenet:CHK\@8M8Po8ucwI,8xA" },
-                    }
-                  ]
-   )
-
-=cut
-
-sub parse_metadata {
-   my $data = shift;
-   my $meta = { raw => $data };
-
-   if ($data =~ /^Version\015?\012/gc) {
-      my $hdr = $meta->{version} = {};
-
-      for (;;) {
-         while ($data =~ /\G([^=\015\012]+)=([^\015\012]*)\015?\012/gc) {
-            my ($k, $v) = ($1, $2);
-            my @p = split /\./, tolc $k, 3;
-
-            $hdr->{$p[0]}               = $v if @p == 1; # lamest code I ever wrote
-            $hdr->{$p[0]}{$p[1]}        = $v if @p == 2;
-            $hdr->{$p[0]}{$p[1]}{$p[2]} = $v if @p == 3;
-            die "FATAL: 4+ dot metadata"     if @p >= 4;
-         }
-
-         if ($data =~ /\GEndPart\015?\012/gc) {
-            # nop
-         } elsif ($data =~ /\GEnd(\015?\012|$)/gc) {
-            last;
-         } elsif ($data =~ /\G([A-Za-z0-9.\-]+)\015?\012/gcs) {
-            push @{$meta->{tolc $1}}, $hdr = {};
-         } elsif ($data =~ /\G(.*)/gcs) {
-            print STDERR "metadata format error ($1), please report this string: <<$data>>";
-            die "metadata format error";
-         }
-      }
-   }
-
-   #$meta->{tail} = substr $data, pos $data;
-
-   $meta;
-}
-
-=item $string = Net::FCP::build_metadata $meta
-
-Takes a hash reference as returned by C<Net::FCP::parse_metadata> and
-returns the corresponding string form. If a string is given, it's returned
-as is.
-
-=cut
-
-sub build_metadata_subhash($$$) {
-   my ($prefix, $level, $hash) = @_;
-
-   join "",
-      map
-         ref $hash->{$_} ? build_metadata_subhash ($prefix . (Net::FCP::touc $_) . ".", $level + 1, $hash->{$_})
-                         : $prefix . ($level > 1 ? $_ : Net::FCP::touc $_) . "=" . $hash->{$_} . "\n",
-         keys %$hash;
-}
-
-sub build_metadata_hash($$) {
-   my ($header, $hash) = @_;
-
-   if (ref $hash eq ARRAY::) {
-      join "", map build_metadata_hash ($header, $_), @$hash
-   } else {
-      (Net::FCP::touc $header) . "\n"
-      . (build_metadata_subhash "", 0, $hash)
-      . "EndPart\n";
-   }
-}
-
-sub build_metadata($) {
-   my ($meta) = @_;
-
-   return $meta unless ref $meta;
-
-   $meta = { %$meta };
-
-   delete $meta->{raw};
-
-   my $res =
-      (build_metadata_hash version => delete $meta->{version})
-      . (join "", map +(build_metadata_hash $_, $meta->{$_}), keys %$meta);
-
-   substr $res, 0, -5; # get rid of "Part". Broken Syntax....
-}
-
 
 =item $fcp = new Net::FCP [host => $host][, port => $port][, progress => \&cb]
 
@@ -249,13 +113,6 @@ it like this:
       warn "progress<$txn,$type," . (join ":", %$attr) . ">\n";
    }
 
-=begin comment
-
-However, the existance of the node is checked by executing a
-C<ClientHello> transaction.
-
-=end
-
 =cut
 
 sub new {
@@ -264,9 +121,6 @@ sub new {
 
    $self->{host} ||= $ENV{FREDHOST} || "127.0.0.1";
    $self->{port} ||= $ENV{FREDPORT} || 8481;
-
-   #$self->{nodehello} = $self->client_hello
-   #   or croak "unable to get nodehello from node\n";
 
    $self;
 }
@@ -278,11 +132,10 @@ sub progress {
       if $self->{progress};
 }
 
-=item $txn = $fcp->txn(type => attr => val,...)
+=item $txn = $fcp->txn (type => attr => val,...)
 
-The low-level interface to transactions. Don't use it.
-
-Here are some examples of using transactions:
+The low-level interface to transactions. Don't use it unless you have
+"special needs". Instead, use predefiend transactions like this:
 
 The blocking case, no (visible) transactions involved:
 
@@ -394,15 +247,17 @@ C<Rijndael> or C<Twofish>, with the latter being the default.
 $txn->(generate_chk => sub {
    my ($self, $metadata, $data, $cipher) = @_;
 
+   $metadata = Net::FCP::Metadata::build_metadata $metadata;
+
    $self->txn (generate_chk =>
-                  data => "$metadata$data",
-                  metadata_length => xeh length $metadata,
-                  cipher => $cipher || "Twofish");
+               data => "$metadata$data",
+               metadata_length => xeh length $metadata,
+               cipher => $cipher || "Twofish");
 });
 
 =item $txn = $fcp->txn_generate_svk_pair
 
-=item ($public, $private) = @{ $fcp->generate_svk_pair }
+=item ($public, $private, $crypto) = @{ $fcp->generate_svk_pair }
 
 Creates a new SVK pair. Returns an arrayref with the public key, the
 private key and a crypto key, which is just additional entropy.
@@ -468,14 +323,11 @@ $txn->(get_size => sub {
 
 =item ($metadata, $data) = @{ $fcp->client_get ($uri, $htl, $removelocal)
 
-Fetches a (small, as it should fit into memory) file from
-freenet. C<$meta> is the metadata (as returned by C<parse_metadata> or
-C<undef>).
+Fetches a (small, as it should fit into memory) key content block from
+freenet. C<$meta> is a C<Net::FCP::Metadata> object or C<undef>).
 
 The C<$uri> should begin with C<freenet:>, but the scheme is currently
 added, if missing.
-
-Due to the overhead, a better method to download big files should be used.
 
   my ($meta, $data) = @{
      $fcp->client_get (
@@ -488,8 +340,7 @@ Due to the overhead, a better method to download big files should be used.
 $txn->(client_get => sub {
    my ($self, $uri, $htl, $removelocal) = @_;
 
-   $uri =~ s/^freenet://;
-   $uri = "freenet:$uri";
+   $uri =~ s/^freenet://; $uri = "freenet:$uri";
 
    $self->txn (client_get => URI => $uri, hops_to_live => xeh (defined $htl ? $htl : 15),
                remove_local_key => $removelocal ? "true" : "false");
@@ -512,14 +363,15 @@ The result is an arrayref with the keys C<uri>, C<public_key> and C<private_key>
 =cut
 
 $txn->(client_put => sub {
-   my ($self, $uri, $meta, $data, $htl, $removelocal) = @_;
+   my ($self, $uri, $metadata, $data, $htl, $removelocal) = @_;
 
-   $meta = build_metadata $meta;
+   $metadata = Net::FCP::Metadata::build_metadata $metadata;
+   $uri =~ s/^freenet://; $uri = "freenet:$uri";
 
    $self->txn (client_put => URI => $uri,
                hops_to_live => xeh (defined $htl ? $htl : 15),
                remove_local_key => $removelocal ? "true" : "false",
-               data => "$meta$data", metadata_length => xeh length $meta);
+               data => "$metadata$data", metadata_length => xeh length $metadata);
 });
 
 } # transactions
@@ -592,7 +444,9 @@ sub new {
    
    $self->{fh} = $fh;
    
-   $self->{w} = $EVENT->new_from_fh ($fh)->cb(sub { $self->fh_ready_w })->poll(0, 1, 1);
+   $self->{w} = $EVENT->new_from_fh ($fh)
+                      ->cb (sub { $self->fh_ready_w })
+                      ->poll (0, 1, 1);
    
    $self;
 }
@@ -874,7 +728,7 @@ sub rcv_data {
 
    if ($self->{datalength} == length $self->{data}) {
       my $data = delete $self->{data};
-      my $meta = Net::FCP::parse_metadata substr $data, 0, $self->{metalength}, "";
+      my $meta = new Net::FCP::Metadata (substr $data, 0, $self->{metalength}, "");
 
       $self->set_result ([$meta, $data]);
       $self->eof;
@@ -895,7 +749,6 @@ package Net::FCP::Txn::ClientPut;
 use base Net::FCP::Txn::GetPut;
 
 *rcv_size_error    = \&Net::FCP::Txn::rcv_throw_exception;
-*rcv_key_collision = \&Net::FCP::Txn::rcv_throw_exception;
 
 sub rcv_pending {
    my ($self, $attr, $type) = @_;
@@ -905,6 +758,11 @@ sub rcv_pending {
 sub rcv_success {
    my ($self, $attr, $type) = @_;
    $self->set_result ($attr);
+}
+
+sub rcv_key_collision {
+   my ($self, $attr, $type) = @_;
+   $self->set_result ({ key_collision => 1, %$attr });
 }
 
 =back
