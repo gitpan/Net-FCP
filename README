@@ -239,7 +239,7 @@ WARNING
         Returns the txn object, useful for chaining.
 
     $txn->cancel (%attr)
-        Cancels the operation with a "cancel" exception anf the given
+        Cancels the operation with a "cancel" exception and the given
         attributes (consider at least giving the attribute "reason").
 
         UNTESTED.
@@ -279,6 +279,6 @@ SEE ALSO
 
 BUGS
 AUTHOR
-     Marc Lehmann <pcg@goof.com>
-     http://www.goof.com/pcg/marc/
+     Marc Lehmann <schmorp@schmorp.de>
+     http://home.schmorp.de/
 

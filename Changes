@@ -1,5 +1,10 @@
 Revision history for Perl extension Net::FCP
 
+0.8  Thu Mar  3 18:00:52 CET 2005
+	- use Array::Heap2, not Array::Heap.
+        - small fixes and improvements everywhere.
+        - change of contact address.
+
 0.7  Tue May 18 15:44:46 CEST 2004
 	- major restructuring.
 	- handle key_collision just like successful insert,

@@ -170,8 +170,8 @@ Not heavily tested.
 
 =head1 AUTHOR
 
- Marc Lehmann <pcg@goof.com>
- http://www.goof.com/pcg/marc/
+ Marc Lehmann <schmorp@schmorp.de>
+ http://home.schmorp.de/
 
 =cut
 

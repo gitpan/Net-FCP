@@ -73,11 +73,11 @@ could be used to reconstruct the download.. hmm..)
 
 =item pri<number>
 
-Set the current job priority to <pri>. The default is 1. A job with twice
-the priority will (on average) get twice as many requests.
+Set the current job priority to <pri>. The default is 1. A job with higher
+priority will (on average) get more requests.
 
-The useful range is probably 0..1000, but be careful and limit yourself to
-small values (<5), otherwise your other downloads might starve!
+The useful range is probably 0..100, but be careful and limit yourself to
+small values (<10), otherwise your other downloads might starve!
 
 =item q
 
@@ -104,8 +104,8 @@ use POSIX ();
 
 $|=1;
 
-our $MAX_TXN = 200; # use max. this many transactions in parallel
-our @HTL = (0, 10, 0, 15, 0, 20, 0, 25, 0);
+our $MAX_TXN = 350; # use max. this many transactions in parallel
+our @HTL = (12,20);
 our $VERIFY_CHK = 1; # verify all blocks, again and again (only useful to debugging).
 our $FMD_HOME = $ENV{FMD_HOME} || "$ENV{HOME}/fmd";
 
@@ -254,6 +254,7 @@ async {
                or $queue_alloc < $MAX_TXN - 5)) {
          (pop_heap @queue)->[1]->send;
          $queue_alloc++;
+         Coro::Timer::sleep 0.05;
       }
       $queue_change->wait;
    }
@@ -264,7 +265,7 @@ sub txn_begin {
    my $sig = new Coro::Signal;
 
    #warn "txn_begin $pri\n";#d#
-   push_heap @queue, [(-rand $pri), $sig];
+   push_heap @queue, [$pri, $sig];
    $queue_change->send;
    $sig->wait;
 }
@@ -279,7 +280,7 @@ sub fetch_uri {
 
    for(my $count = 1; ; $count += 0.3) {
       for my $htl (@HTL) {
-         txn_begin $pri / ($htl + $count);
+         txn_begin time + $htl + $count;
          my $sig = new Coro::Signal;
          my ($meta, $data) = eval { @{ $FCP->client_get ($uri, $htl) } };
          txn_end;
@@ -308,7 +309,7 @@ sub fetch_uri {
 sub log {
    my ($self, $text) = @_;
    my $time = POSIX::strftime "%H:%M:%S", localtime time;
-   warn "$time $self->{id}: $text\n";
+   warn "$time $self->{id},$self->{p}{pri}: $text\n";
    $self->{log} .= "$time $text\n";
 }
 
@@ -523,11 +524,10 @@ sub state_splitfile {
             next if $txn[$id] || $blk->{done} || $blk->{seg}{todo} <= $blk->{seg}{done};
 
             my $htl = $HTL[$blk->{htl}++ % @HTL];
-            #my $pri = $p->{pri} * ($blk->{seg}{done} + 1) / ($blk->{seg}{todo} * ($htl + 1));
-            my $pri = $p->{pri} * ($blk->{seg}{done} + 1) / $blk->{seg}{todo};
+            my $pri = int time + $htl / 20 * 7200 * rand;
 
-            #warn "GET<$blk->{uri}, $htl>\n";
             txn_begin $pri;
+            #warn $self->{id} . ", GET<$htl, $pri>\n";#d#
             $txn[$id] ||= $FCP->txn_client_get ($blk->{uri}, $htl)->cb(sub {
                undef $txn[$id];
 
@@ -553,7 +553,8 @@ sub state_splitfile {
                   $::htl_sum += $htl;
                   $::htl_cnt++;
 
-                  $self->log (sprintf "got block $seg->{id}.$id ($seg->{done}/$seg->{todo}) at htl $htl (%f) and pri $pri", $::htl_sum / $::htl_cnt);
+                  $self->log (sprintf "got block $seg->{id}.$id %d ($seg->{done}/$seg->{todo}) at htl $htl (%f) and pri $pri",
+                                       length $data, $::htl_sum / $::htl_cnt);
                } else {
                   if ($@) {
                      if ($@->type ("data_not_found")) {

@@ -74,7 +74,7 @@ package Net::FCP;
 
 use Carp;
 
-$VERSION = 0.7;
+$VERSION = 0.8;
 
 no warnings;
 
@@ -492,7 +492,7 @@ sub userdata($$) {
 
 =item $txn->cancel (%attr)
 
-Cancels the operation with a C<cancel> exception anf the given attributes
+Cancels the operation with a C<cancel> exception and the given attributes
 (consider at least giving the attribute C<reason>).
 
 UNTESTED.
@@ -840,8 +840,8 @@ L<http://freenet.sf.net>.
 
 =head1 AUTHOR
 
- Marc Lehmann <pcg@goof.com>
- http://www.goof.com/pcg/marc/
+ Marc Lehmann <schmorp@schmorp.de>
+ http://home.schmorp.de/
 
 =cut
 
