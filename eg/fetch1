@@ -9,8 +9,7 @@ my $fcp = new Net::FCP;
 my ($meta, $data) = @{ $fcp->client_get ("freenet:$ARGV[0]", $ARGV[1]) };
 
 use Data::Dumper;
-print Dumper $meta;
-print "=============================================================================\n";
+print STDERR Dumper $meta;
 print $data;
 
 

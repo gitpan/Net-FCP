@@ -1,4 +1,12 @@
-Revision history for Perl extension Net:FCP
+Revision history for Perl extension Net::FCP
+
+0.07  Sun Sep 14 10:57:09 CEST 2003
+	- handle metadata that doesn't end in a newline.
+        - fixed txn names to be txn_* instead of *_txn, as per the docs.
+        - "fix" insert_private_key.
+        - fix endless loop problem on ClientGet.
+        - many, many other small fixes.
+        - added bin/fmd, the not-yet-functional freenet mass downloader.
 
 0.06  Wed Sep 10 07:13:41 CEST 2003
 	- various small bugfixes.

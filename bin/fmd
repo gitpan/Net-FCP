@@ -1,0 +1,556 @@
+#!/opt/bin/perl
+
+use Net::FCP qw(event=Coro);
+use BerkeleyDB;
+use Storable;
+use Time::HiRes;
+use Coro;
+use Coro::Event;
+use Coro::Handle;
+use Coro::Signal;
+use List::Util;
+use Digest::SHA1;
+use Crypt::Twofish2;
+use Algorithm::FEC;
+use Digest::SHA1;
+
+$|=1;
+
+our $MAX_TXN = 200; # use max. this many transactions in parallel
+our @HTL = (5, 10, 15, 20, 22, 24, (25) x 10);
+our $FMD_HOME = $ENV{FMD_HOME} || "$ENV{HOME}/fmd";
+
+our $FCP = new Net::FCP;
+
+defined $FMD_HOME
+   or die "you currently must define FMD_HOME to a persistent directory";
+
+mkdir $FMD_HOME, 0700;
+
+our $DB_HOME = "$FMD_HOME/db";
+
+mkdir $DB_HOME, 0700;
+
+our $DB_ENV = new BerkeleyDB::Env
+              -Home => $DB_HOME,
+              -Cachesize => 1_000_000,
+              #-ErrFile => "/proc/self/fd/2",
+              -ErrPrefix => "DATABASE",
+              -Verbose => 1,
+              -Flags => DB_CREATE|DB_RECOVER|DB_INIT_MPOOL|DB_INIT_TXN
+                 or die "unable to create database home $DB_HOME";
+
+our %DB_CACHE;
+tie %DB_CACHE, BerkeleyDB::Btree,
+    -Env => $DB_ENV,
+    -Filename => "cache",
+    -Flags => DB_CREATE,
+       or die "unable to create/open key cache table";
+
+our $QUEUE_HOME = "$FMD_HOME/tmp";
+mkdir $QUEUE_HOME, 0700;
+our $DONE_HOME = "$FMD_HOME/done";
+mkdir $DONE_HOME, 0700;
+
+our %job;
+
+for (<\Q$QUEUE_HOME\E/*.j>) {
+   job->new_from_file ($_);
+}
+
+sub push_key {
+   my ($key, $title) = @_;
+
+   for my $job (values %job) {
+      if ($job->{key} eq $key) {
+         warn "job $job->{id} already works on this, not adding";
+         return;
+      }
+   }
+
+   job->new ($key, $title);
+}
+
+sub cmdline {
+   my ($i, $o) = @_;
+   async {
+      while (print $o "> " and defined ($_ = <$i>)) {
+         chomp;
+         if (/(CHK\@[a-zA-Z0-9,~\-]{54})[\/ ]+(.*)$/) {
+         print "pushkey($1)($2)\n";
+            push_key $1, $2;
+         } elsif (/^q/) {
+            close $i;
+            close $o;
+         } elsif (/^l/) {
+            for my $job (sort { $a->{id} <=> $b->{id} } values %job) {
+               print $o "$_ $job->{id}: $job->{uri} $job->{title} $job->{status}\n";
+            }
+         } elsif (/^s(\d+)/) {
+            if (my $job = $job{$1}) {
+               print $o $job->show;
+            }
+         } elsif (/^k\s*(\d+)/) {
+            if (my $job = $job{$1}) {
+               warn $job;
+               $job->kill;
+            }
+         } elsif (/^(\d+)/) {
+            if (my $job = $job{$1}) {
+               print $o delete $job->{_log};
+               if ($job->{_input}) {
+               }
+            }
+         } else {
+            print $o "?\n";
+         }
+         for my $job (sort { $a->{id} <=> $b->{id} } values %job) {
+            if ($job->{_input}) {
+                print $o "> $job->{id} $job->{title} $job->{status}\n";
+            }
+         }
+      }
+   }
+}
+
+open my $stdin , "<&0" or die;
+open my $stdout, ">&1" or die;
+cmdline unblock $stdin, unblock $stdout;
+
+package job;
+
+use Coro;
+use Fcntl;
+use IO::Handle;
+
+my $count = 0;
+
+sub new {
+   my ($class, $key, $title) = @_;
+
+   my $self = bless {
+      key => $key,
+      title => $title,
+      _job   => "$QUEUE_HOME/" . Time::HiRes::time . ":" . ($count++) . ".j",
+   }, $class;
+
+   $self->save;
+   $self->start;
+   $self;
+}
+
+sub new_from_file {
+   my ($class, $path) = @_;
+   my $self = Storable::retrieve $path;
+   $self->{_job} = $path;
+   $count = $self->{id} + 1 if $self->{id} >= $count;
+   $self->start;
+   $self;
+}
+
+sub save {
+   my ($self) = @_;
+   Storable::nstore +(bless {
+      map +($_ => $self->{$_}), grep !/^_/, keys %$self
+   }, ref $self), "$self->{_job}~";
+   rename "$self->{_job}~", $self->{_job};
+}
+
+sub clean {
+   my ($self) = @_;
+
+   delete $self->{blk};
+   delete $job{$self->{id}};
+   $self->save;
+   rename $self->{_job}, "$DONE_HOME/$self->{title}.job";
+   unlink $self->{_job};
+}
+
+sub kill {
+   my ($self) = @_;
+
+   $self->clean;
+   $self->{_coro}->cancel;
+}
+
+my @queue;
+my $queue_change = new Coro::Signal;
+my $queue_alloc = 0;
+
+async {
+   for (;;) {
+      while (@queue
+             and (($queue[0][0] > 10 and $queue_alloc < $MAX_TXN)
+               or ($queue[0][0] >  1 and $queue_alloc < $MAX_TXN - 3)
+               or $queue_alloc < $MAX_TXN - 5)) {
+         @{shift @queue}[1]->send;
+         $queue_alloc++;
+      }
+      $queue_change->wait;
+   }
+};
+
+sub txn_begin {
+   my ($pri) = @_;
+   my $sig = new Coro::Signal;
+
+   #warn "txn_begin $pri\n";#d#
+   @queue = sort { $b->[0] <=> $a->[0] } @queue, [rand $pri, $sig];
+   $queue_change->send;
+   $sig->wait;
+}
+
+sub txn_end {
+   $queue_alloc--;
+   $queue_change->send;
+}
+
+sub fetch_uri {
+   my ($pri, $uri) = @_;
+   my $sha1 = Digest::SHA1::sha1 $uri;
+   my $data = $::DB_CACHE{$sha1};
+   # data should be encrypted using the uri as key
+   if (defined $data) {
+      return @{Storable::thaw ($data)}[1,2];
+   } else {
+      for my $htl (@HTL) {
+         txn_begin $pri / $htl;
+         my $sig = new Coro::Signal;
+         my ($meta, $data) = eval { @{ $FCP->client_get ($uri, $htl) } };
+         txn_end;
+         if ($@) {
+            if (UNIVERSAL::isa ($@, Net::FCP::Exception::)) {
+               if ($@->type ("data_not_found")
+                   || $@->type ("route_not_found")) {
+                  next;
+               }
+               if ($@->type ("short_data")) {
+                  warn "(short_data, redo)\n";
+                  redo;
+               }
+               die;
+            }
+         }
+         $::DB_CACHE{$sha1} = Storable::nfreeze [time, $meta, $data];
+         $DB_ENV->txn_checkpoint (0, 0);
+         return ($meta, $data);
+      }
+   }
+
+   return ();
+}
+
+sub log {
+   my ($self, $format) = @_;
+   $self->{_log} .= "$format\n";
+}
+
+sub feedback {
+   my ($self, $prompt) = @_;
+   $self->{_input} = [$Coro::current, $prompt];
+   Coro::schedule;
+}
+
+sub show {
+   my ($self) = @_;
+
+   "ID: $self->{id}\n"
+      . "Title: $self->{title}\n"
+      . "Blocks#: " . @{$self->{blk}} . "\n"
+      . "Blocks: " . (join "", map {
+         $_->{done} ? "+" : "-"
+      } @{$self->{blk}}) . "\n" .
+   "";
+}
+
+my $id;
+
+sub MAXSEG (){ 128*1024*1024 }
+sub MINSEG (){   6* 128*1024 }
+
+sub blocksize($) {
+   return
+        $_[0] >= 64*1024*1024 ? 1024*1024
+      : $_[0] >= 32*1024*1024 ?  512*1024
+      : $_[0] >=    1024*1024 ?  256*1024
+                              :  128*1024;
+}
+
+sub start {
+   my ($self) = @_;
+   $job{$self->{id} = ++$id} = $self;
+
+   #$self->{pri} = 10000 if $self->{id} == 17;#d#
+   $self->{pri} ||= 1;
+
+   if (0) {
+      delete $self->{todo};
+      delete $self->{done};
+      delete $self->{blk};
+      $self->save;
+   }
+
+   $self->{status} = "starting";
+   $self->{_coro} = async {
+      $self->{status} = "initial fetch";
+      $self->log ("fetching $self->{key} (=$self->{title})");
+
+      my ($meta, $data) = fetch_uri 100, "freenet:$self->{key}";
+      $self->{status} = "initial fetch done";
+      #use PApp::Util; print STDERR PApp::Util::dumpval [keys %{$meta->{document}[0]{split_file}}];
+      $self->log ("got $self->{key}, $meta->{document}[0]{info}{format}");
+
+      my $file = "$QUEUE_HOME/tmp.$self->{title}";
+      sysopen my $fh, $file, O_RDWR|O_CREAT, 0600;
+
+      if (my $splitfile = $meta->{document}[0]{split_file}) {
+         #use PApp::Util; die PApp::Util::dumpval $meta->{document} if @{$meta->{document}} > 1;
+         my $filesize = hex $splitfile->{size};
+
+         if ($splitfile->{algo_name} eq "OnionFEC_a_1_2") {
+            my $data_packets = hex $splitfile->{block_count};
+            my $check_packets = hex $splitfile->{check_block_count};
+
+            $self->log ("splitfile $data_packets, $check_packets");
+
+            my $blk = ($self->{blk} ||= []);
+
+            unless (@$blk) {
+               for (1..$data_packets) {
+                  push @$blk, {
+                     uri => $splitfile->{block}{sprintf "%x", $_},
+                  };
+               }
+               for (1..$check_packets) {
+                  push @$blk, {
+                     uri => $splitfile->{check_block}{sprintf "%x", $_},
+                  };
+               }
+            }
+
+            my @segments;
+            my $segments = 0;
+
+            {
+               # that is a horrible algorithm :(, these freenet freaks are... java-disabled
+               # hardcoding lots of magic parameters is soo dumb.
+               my $size = $filesize;
+               my $offset = 0;
+               my $offset2 = ($filesize & ~(1024*1024-1)) + 1024*1024; # leave enough space after last data block
+               my $idx  = 0;
+               my $idx2 = $data_packets;
+               my @redundandy = (0,1,2); # maybe OnionFAC_a_1_2 means 1/2 redundancy(?)
+
+               while ($size > 0) {
+                  my $segsize = $size >= MAXSEG ? MAXSEG : $size <= MINSEG ? MINSEG : $size;
+                  my $blksize = blocksize $segsize;
+                  my $seg    = 
+                     {
+                        id      => $segments++,
+                        todo    => int (($segsize + $blksize - 1) / $blksize),
+                        done    => 0,
+                        blk     => [],
+                        blksize => $blksize,
+                     };
+
+                  push @segments, $seg;
+                  $size -= $segsize;
+
+                  while ($segsize > 0) {
+                     push @{$seg->{blk}}, $idx;
+                     for ($blk->[$idx++]) {
+                        $_->{offset} = $offset;
+                        #$_->{size}   = $blksize > $segsize ? $segsize : $blksize; # WRONG
+                        $_->{size}   = $blksize;
+                        $_->{seg}    = $seg;
+                     }
+
+                     $segsize -= $blksize;
+                     $offset  += $blksize;
+
+                     if (($redundandy[0] += $redundandy[1]) >= $redundandy[2]) {
+                        $redundandy[0] -= $redundandy[2];
+
+                        push @{$seg->{blk}}, $idx2;
+                        for ($blk->[$idx2++]) {
+                           $_->{offset} = $offset2;
+                           $_->{size}   = $blksize;
+                           $_->{seg}    = $seg;
+                        }
+
+                        $offset2 += $blksize;
+                     }
+                  }
+               }
+
+               $idx == $data_packets
+                  or die "$self->{id}/$self->{tile} $self->{_job}\nidx $idx != data_packets $data_packets";
+               $idx2 == $data_packets + $check_packets
+                  or die "$self->{id}/$self->{tile} $self->{_job}\nidx2 $idx2 != data_packets $data_packets + check_packets $check_packets";
+            }
+
+            for (@$blk) {
+               ++$_->{seg}{done} if $_->{done};
+               delete $_->{htl};
+            }
+
+            my $fail = 0;
+            my $sig = new Coro::Signal;
+
+            $self->{status} = "splitfile fetch (" .  @$blk . " blocks)";
+
+            my @txn;
+
+            for (;;) {
+               for my $id (0 .. $#$blk) {
+                  my $blk = $blk->[$id];
+
+                  next if $txn[$id] || $blk->{done} || $blk->{seg}{todo} == $blk->{seg}{done};
+
+                  my $htl = $blk->{htl} >= @HTL ? 25 : $HTL[$blk->{htl}++];
+                  my $pri = $self->{pri} * ($blk->{seg}{done} + 1) / ($blk->{seg}{todo} * $htl);
+
+                  #warn "GET<$blk->{uri}, $htl>\n";
+                  txn_begin $pri;
+                  $txn[$id] ||= $FCP->txn_client_get ($blk->{uri}, $htl)->cb(sub {
+                     undef $txn[$id];
+                     txn_end;
+
+                     my $seg = $blk->{seg};
+
+                     my ($meta, $data) = eval { @{ $_[0]->result } };
+
+                     if (defined $data) {
+                        $blk->{size} == length $data
+                           or die sprintf "block $id expected size %d, got %d\n", $blk->{size}, length $data;
+
+                        sysseek $fh, $blk->{offset}, 0;
+                        syswrite $fh, $data;
+                        IO::Handle::sync $fh;
+                        $self->log ("got block $seg->{id}.$id ($seg->{done}/$seg->{todo}) at htl $htl and pri $pri");
+
+                        $::htl_sum += $htl;
+                        $::htl_cnt++;
+                        printf "$self->{id}: got block $seg->{id}.$id ($seg->{done}/$seg->{todo}) at htl $htl (%f) and pri $pri\n", $::htl_sum / $::htl_cnt;
+
+                        $blk->{done} = 1;
+                        $seg->{done}++;
+                        $self->save;
+                     } else {
+                        ++$fail;
+                     }
+                     $self->{status} = "splitfile fetch ($seg->{done}/$seg->{todo}, $fail failed)";
+
+                     $sig->send;
+                  });
+               }
+
+               for my $seg (@segments) {
+                  if ($seg->{done} == $seg->{todo} && !$seg->{finished}) {
+                     $seg->{finished}++;
+                     $segments--;
+
+                     warn "segment done, cancelling segment $seg->{id}\n";
+                     for my $id (0.. $#$blk) {
+                        next unless $seg == $blk->[$id]{seg};
+                        $txn[$id]->cancel if $txn[$id];
+                     }
+                  }
+               }
+
+               last unless $segments;
+
+               $sig->wait;
+            }
+
+            warn "decoding < $self->{_job} $file $filesize >";
+            #system "cp", $file, "$file~";
+            #open my $fh, "+<", "$file~"
+            #   or die "$file~: $!";
+            if (@segments > 1) {
+               $self->feedback ("decode > 1 segment?");
+            }
+
+            for my $seg (@segments) {
+               my @part;
+               my @idx;
+               my @blk = map $blk->[$_], sort { $a <=> $b } @{$seg->{blk}};
+
+               for my $id (0 .. $#blk) {
+                  my $blk = $blk[$id];
+                  next unless $blk->{done};
+
+                  push @part, [$fh, $blk->{offset}];
+                  push @idx, $id;
+
+                  last if @idx == $seg->{todo};
+               }
+
+               my $fec = new Algorithm::FEC
+                                $seg->{todo},
+                                scalar @blk,
+                                $seg->{blksize};
+
+               $fec->shuffle (\@part, \@idx);
+
+               # now copy check blocks to their destination position
+               for my $i (0 .. $#idx) {
+                  next if $idx[$i] == $i;
+
+                  my $src = $part[$i];
+                  $part[$i] = [$fh, $blk[$i]{offset}];
+                  $fec->copy ($src, $part[$i]);
+               }
+
+               $fec->set_decode_blocks (\@part, \@idx);
+               $fec->decode;
+            }
+
+            my $sha1 = new Digest::SHA1;
+            open my $dd, "-|", "head -c$filesize \Q$file\E"
+               or die "DD: $!";
+            #$dd = Coro::Handle::unblock $dd;
+            $sha1->addfile ($dd);
+
+            if (exists $meta->{document}[0]{info}{checksum}
+                and $meta->{document}[0]{info}{checksum} ne $sha1->hexdigest) {
+               warn "META: $meta->{document}[0]{info}{checksum} and real checksum for $filesize DIFFER\n";
+               exit (77);
+            }
+
+            truncate $fh, $filesize;
+            sysseek $fh, 0, 0;
+
+         } else {
+            $self->log ("splitfile algo '$splitfile->{algo_name}' unknown");
+            $self->feedback ("algo unknown");
+            terminate;
+         }
+
+      } elsif ((defined $data) and (length $data)) {
+         syswrite $fh, $data;
+      } else {
+         warn "EMPTY FILE<$self->{title}>\n";
+         $self->{status} = "aborted due to bug or really not found";
+         terminate;
+      }
+
+      IO::Handle::sync $fh;
+      close $fh;
+
+      unlink "$DONE_HOME/$self->{title}";
+      link $file, "$DONE_HOME/$self->{title}"
+         or die "link: $file => $DONE_HOME/$self->{title}: $!";
+      system "sync";
+      $self->clean;
+      unlink $file;
+
+      $self->{status} = "finished";
+      $self->feedback ("finished");
+   };
+}
+
+package main;
+
+&Coro::Event::loop;
+

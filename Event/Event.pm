@@ -1,6 +1,6 @@
 package Net::FCP::Event::Event;
 
-require Event;
+use Event ();
 
 sub new_from_fh {
    my ($class, $fh) = @_;

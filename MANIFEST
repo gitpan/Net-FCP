@@ -9,4 +9,5 @@ Event/Coro.pm
 t/00_load.t
 eg/simple
 eg/fetch1
+bin/fmd
 META.yml                                Module meta-data in YAML

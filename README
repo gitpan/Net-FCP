@@ -33,6 +33,23 @@ WARNING
 
     You should specify the event module to use only in the main program.
 
+  FREENET BASICS
+    Ok, this section will not explain any freenet basics to you, just some
+    problems I found that you might want to avoid:
+
+    freenet URIs are _NOT_ URIs
+        Whenever a "uri" is required by the protocol, freenet expects a kind
+        of URI prefixed with the "freenet:" scheme, e.g. "freenet:CHK...".
+        However, these are not URIs, as freeent fails to parse them
+        correctly, that is, you must unescape an escaped characters ("%2c"
+        => ",") yourself. Maybe in the future this library will do it for
+        you, so watch out for this incompatible change.
+
+    Numbers are in HEX
+        Virtually every number in the FCP protocol is in hex. Be sure to use
+        "hex()" on all such numbers, as the module (currently) does nothing
+        to convert these for you.
+
   THE Net::FCP CLASS
     $meta = Net::FCP::parse_metadata $string
         Parse a metadata string and return it.
@@ -50,18 +67,18 @@ WARNING
               version => { revision => 1 },
               document => [
                             {
-                              "info.format" => "image/jpeg",
+                              info => { format" => "image/jpeg" },
                               name => "background.jpg",
-                              "redirect.target" => "freenet:CHK\@ZcagI,ra726bSw"
+                              redirect => { target => "freenet:CHK\@ZcagI,ra726bSw" },
                             },
                             {
-                              "info.format" => "text/html",
+                              info => { format" => "text/html" },
                               name => ".next",
-                              "redirect.target" => "freenet:SSK\@ilUPAgM/TFEE/3"
+                              redirect => { target => "freenet:SSK\@ilUPAgM/TFEE/3" },
                             },
                             {
-                              "info.format" => "text/html",
-                              "redirect.target" => "freenet:CHK\@8M8Po8ucwI,8xA"
+                              info => { format" => "text/html" },
+                              redirect => { target => "freenet:CHK\@8M8Po8ucwI,8xA" },
                             }
                           ]
            )
@@ -72,8 +89,7 @@ WARNING
         "FREDPORT").
 
         Connections are virtual because no persistent physical connection is
-        established. However, the existance of the node is checked by
-        executing a "ClientHello" transaction.
+        established.
 
     $txn = $fcp->txn(type => attr => val,...)
         The low-level interface to transactions. Don't use it.
@@ -152,9 +168,9 @@ WARNING
            ]
 
     $txn = $fcp->txn_insert_private_key ($private)
-    $uri = $fcp->insert_private_key ($private)
+    $public = $fcp->insert_private_key ($private)
         Inserts a private key. $private can be either an insert URI (must
-        start with freenet:SSK@) or a raw private key (i.e. the private
+        start with "freenet:SSK@") or a raw private key (i.e. the private
         value you get back from "generate_svk_pair").
 
         Returns the public key.
@@ -182,7 +198,18 @@ WARNING
              )
           };
 
-    MISSING: ClientPut
+    $txn = $fcp->txn_client_put ($uri, $metadata, $data, $htl, $removelocal)
+    my $uri = $fcp->client_put ($uri, $metadata, $data, $htl, $removelocal);
+        Insert a new key. If the client is inserting a CHK, the URI may be
+        abbreviated as just CHK@. In this case, the node will calculate the
+        CHK.
+
+        $meta can be a reference or a string (ONLY THE STRING CASE IS
+        IMPLEMENTED!).
+
+        THIS INTERFACE IS UNTESTED AND SUBJECT TO CHANGE.
+
+    MISSING: (ClientPut), InsretKey
 
   THE Net::FCP::Txn CLASS
     All requests (or transactions) are executed in a asynchroneous way (LIE:
@@ -218,11 +245,37 @@ WARNING
 
         Returns the txn object, useful for chaining.
 
+    $txn->cancel (%attr)
+        Cancels the operation with a "cancel" exception anf the given
+        attributes (consider at least giving the attribute "reason").
+
+        UNTESTED.
+
     $result = $txn->result
         Waits until a result is available and then returns it.
 
         This waiting is (depending on your event model) not very efficient,
         as it is done outside the "mainloop".
+
+  The Net::FCP::Exception CLASS
+    Any unexpected (non-standard) responses that make it impossible to
+    return the advertised result will result in an exception being thrown
+    when the "result" method is called.
+
+    These exceptions are represented by objects of this class.
+
+    $exc = new Net::FCP::Exception $type, \%attr
+        Create a new exception object of the given type (a string like
+        "route_not_found"), and a hashref containing additional attributes
+        (usually the attributes of the message causing the exception).
+
+    $exc->type([$type])
+        With no arguments, returns the exception type. Otherwise a boolean
+        indicating wether the exception is of the given type is returned.
+
+    $exc->attr([$attr])
+        With no arguments, returns the attributes. Otherwise the named
+        attribute value is returned.
 
 SEE ALSO
     <http://freenet.sf.net>.

@@ -37,6 +37,30 @@ C<event=Glib> etc.
 
 You should specify the event module to use only in the main program.
 
+=head2 FREENET BASICS
+
+Ok, this section will not explain any freenet basics to you, just some
+problems I found that you might want to avoid:
+
+=over 4
+
+=item freenet URIs are _NOT_ URIs
+
+Whenever a "uri" is required by the protocol, freenet expects a kind of
+URI prefixed with the "freenet:" scheme, e.g. "freenet:CHK...". However,
+these are not URIs, as freeent fails to parse them correctly, that is, you
+must unescape an escaped characters ("%2c" => ",") yourself. Maybe in the
+future this library will do it for you, so watch out for this incompatible
+change.
+
+=item Numbers are in HEX
+
+Virtually every number in the FCP protocol is in hex. Be sure to use
+C<hex()> on all such numbers, as the module (currently) does nothing to
+convert these for you.
+
+=back
+
 =head2 THE Net::FCP CLASS
 
 =over 4
@@ -47,7 +71,7 @@ package Net::FCP;
 
 use Carp;
 
-$VERSION = 0.06;
+$VERSION = 0.07;
 
 no warnings;
 
@@ -95,18 +119,18 @@ manifest:
       version => { revision => 1 },
       document => [
                     {
-                      "info.format" => "image/jpeg",
+                      info => { format" => "image/jpeg" },
                       name => "background.jpg",
-                      "redirect.target" => "freenet:CHK\@ZcagI,ra726bSw"
+                      redirect => { target => "freenet:CHK\@ZcagI,ra726bSw" },
                     },
                     {
-                      "info.format" => "text/html",
+                      info => { format" => "text/html" },
                       name => ".next",
-                      "redirect.target" => "freenet:SSK\@ilUPAgM/TFEE/3"
+                      redirect => { target => "freenet:SSK\@ilUPAgM/TFEE/3" },
                     },
                     {
-                      "info.format" => "text/html",
-                      "redirect.target" => "freenet:CHK\@8M8Po8ucwI,8xA"
+                      info => { format" => "text/html" },
+                      redirect => { target => "freenet:CHK\@8M8Po8ucwI,8xA" },
                     }
                   ]
    )
@@ -133,12 +157,13 @@ sub parse_metadata {
 
          if ($data =~ /\GEndPart\015?\012/gc) {
             # nop
-         } elsif ($data =~ /\GEnd\015?\012/gc) {
+         } elsif ($data =~ /\GEnd(\015?\012|$)/gc) {
             last;
          } elsif ($data =~ /\G([A-Za-z0-9.\-]+)\015?\012/gcs) {
             push @{$meta->{tolc $1}}, $hdr = {};
          } elsif ($data =~ /\G(.*)/gcs) {
-            die "metadata format error ($1)";
+            print STDERR "metadata format error ($1), please report this string: <<$data>>";
+            die "metadata format error";
          }
       }
    }
@@ -154,8 +179,14 @@ Create a new virtual FCP connection to the given host and port (default
 127.0.0.1:8481, or the environment variables C<FREDHOST> and C<FREDPORT>).
 
 Connections are virtual because no persistent physical connection is
-established. However, the existance of the node is checked by executing a
+established.
+
+=begin comment
+
+However, the existance of the node is checked by executing a
 C<ClientHello> transaction.
+
+=end
 
 =cut
 
@@ -174,7 +205,7 @@ sub new {
 
 sub progress {
    my ($self, $txn, $type, $attr) = @_;
-   warn "progress<$txn,$type," . (join ":", %$attr) . ">\n";
+   #warn "progress<$txn,$type," . (join ":", %$attr) . ">\n";
 }
 
 =item $txn = $fcp->txn(type => attr => val,...)
@@ -215,11 +246,13 @@ sub txn {
    $txn;
 }
 
-sub _txn($&) {
+{ # transactions
+
+my $txn = sub {
    my ($name, $sub) = @_;
-   *{"$name\_txn"} = $sub;
+   *{"txn_$name"} = $sub;
    *{$name} = sub { $sub->(@_)->result };
-}
+};
 
 =item $txn = $fcp->txn_client_hello
 
@@ -235,11 +268,11 @@ Executes a ClientHello request and returns it's results.
 
 =cut
 
-_txn client_hello => sub {
+$txn->(client_hello => sub {
    my ($self) = @_;
 
    $self->txn ("client_hello");
-};
+});
 
 =item $txn = $fcp->txn_client_info
 
@@ -273,11 +306,11 @@ Executes a ClientInfo request and returns it's results.
 
 =cut
 
-_txn client_info => sub {
+$txn->(client_info => sub {
    my ($self) = @_;
 
    $self->txn ("client_info");
-};
+});
 
 =item $txn = $fcp->txn_generate_chk ($metadata, $data)
 
@@ -287,11 +320,11 @@ Creates a new CHK, given the metadata and data. UNTESTED.
 
 =cut
 
-_txn generate_chk => sub {
+$txn->(generate_chk => sub {
    my ($self, $metadata, $data) = @_;
 
-   $self->txn (generate_chk => data => "$data$metadata", metadata_length => length $metadata);
-};
+   $self->txn (generate_chk => data => "$metadata$data", metadata_length => length $metadata);
+});
 
 =item $txn = $fcp->txn_generate_svk_pair
 
@@ -306,19 +339,19 @@ Creates a new SVK pair. Returns an arrayref.
 
 =cut
 
-_txn generate_svk_pair => sub {
+$txn->(generate_svk_pair => sub {
    my ($self) = @_;
 
    $self->txn ("generate_svk_pair");
-};
+});
 
 =item $txn = $fcp->txn_insert_private_key ($private)
 
-=item $uri = $fcp->insert_private_key ($private)
+=item $public = $fcp->insert_private_key ($private)
 
 Inserts a private key. $private can be either an insert URI (must start
-with freenet:SSK@) or a raw private key (i.e. the private value you get back
-from C<generate_svk_pair>).
+with C<freenet:SSK@>) or a raw private key (i.e. the private value you get
+back from C<generate_svk_pair>).
 
 Returns the public key.
 
@@ -326,11 +359,11 @@ UNTESTED.
 
 =cut
 
-_txn insert_private_key => sub {
+$txn->(insert_private_key => sub {
    my ($self, $privkey) = @_;
 
    $self->txn (invert_private_key => private => $privkey);
-};
+});
 
 =item $txn = $fcp->txn_get_size ($uri)
 
@@ -343,11 +376,11 @@ UNTESTED.
 
 =cut
 
-_txn get_size => sub {
+$txn->(get_size => sub {
    my ($self, $uri) = @_;
 
    $self->txn (get_size => URI => $uri);
-};
+});
 
 =item $txn = $fcp->txn_client_get ($uri [, $htl = 15 [, $removelocal = 0]])
 
@@ -367,13 +400,38 @@ Due to the overhead, a better method to download big files should be used.
 
 =cut
 
-_txn client_get => sub {
+$txn->(client_get => sub {
    my ($self, $uri, $htl, $removelocal) = @_;
 
-   $self->txn (client_get => URI => $uri, hops_to_live => ($htl || 15), remove_local_key => $removelocal ? "true" : "false");
-};
+   $self->txn (client_get => URI => $uri, hops_to_live => (defined $htl ? $htl :15),
+               remove_local_key => $removelocal ? "true" : "false");
+});
 
-=item MISSING: ClientPut
+=item $txn = $fcp->txn_client_put ($uri, $metadata, $data, $htl, $removelocal)
+
+=item my $uri = $fcp->client_put ($uri, $metadata, $data, $htl, $removelocal);
+
+Insert a new key. If the client is inserting a CHK, the URI may be
+abbreviated as just CHK@. In this case, the node will calculate the
+CHK.
+
+C<$meta> can be a reference or a string (ONLY THE STRING CASE IS IMPLEMENTED!).
+
+THIS INTERFACE IS UNTESTED AND SUBJECT TO CHANGE.
+
+=cut
+
+$txn->(client_put => sub {
+   my ($self, $uri, $meta, $data, $htl, $removelocal) = @_;
+
+   $self->txn (client_put => URI => $uri, hops_to_live => (defined $htl ? $htl :15),
+               remove_local_key => $removelocal ? "true" : "false",
+               data => "$meta$data", metadata_length => length $meta);
+});
+
+} # transactions
+
+=item MISSING: (ClientPut), InsretKey
 
 =back
 
@@ -487,6 +545,22 @@ sub userdata($$) {
    $self;
 }
 
+=item $txn->cancel (%attr)
+
+Cancels the operation with a C<cancel> exception anf the given attributes
+(consider at least giving the attribute C<reason>).
+
+UNTESTED.
+
+=cut
+
+sub cancel {
+   my ($self, %attr) = @_;
+   $self->throw (Net::FCP::Exception->new (cancel => { %attr }));
+   $self->set_result;
+   $self->eof;
+}
+
 sub fh_ready_w {
    my ($self) = @_;
 
@@ -534,14 +608,6 @@ sub fh_ready_r {
    }
 }
 
-sub rcv_data {
-   my ($self, $chunk) = @_;
-
-   $self->{data} .= $chunk;
-
-   $self->progress ("data", { chunk => length $chunk, total => length $self->{data}, end => $self->{datalength} });
-}
-
 sub rcv {
    my ($self, $type, $attr) = @_;
 
@@ -569,7 +635,7 @@ sub throw {
    my ($self, $exc) = @_;
 
    $self->{exception} = $exc;
-   $self->set_result (1);
+   $self->set_result;
    $self->eof; # must be last to avoid loops
 }
 
@@ -591,7 +657,11 @@ sub eof {
 
    delete $self->{fcp}{txn}{$self};
 
-   $self->set_result; # just in case
+   unless (exists $self->{result}) {
+      $self->throw (Net::FCP::Exception->new (short_data => {
+         reason   => "unexpected eof or internal node error",
+      }));
+   }
 }
 
 sub progress {
@@ -654,17 +724,15 @@ use base Net::FCP::Txn;
 
 sub rcv_success {
    my ($self, $attr) = @_;
-
    $self->set_result ([$attr->{PublicKey}, $attr->{PrivateKey}]);
 }
 
-package Net::FCP::Txn::InvertPrivateKey;
+package Net::FCP::Txn::InsertPrivateKey;
 
 use base Net::FCP::Txn;
 
 sub rcv_success {
    my ($self, $attr) = @_;
-
    $self->set_result ($attr->{PublicKey});
 }
 
@@ -674,7 +742,6 @@ use base Net::FCP::Txn;
 
 sub rcv_success {
    my ($self, $attr) = @_;
-
    $self->set_result ($attr->{Length});
 }
 
@@ -703,6 +770,21 @@ use base Net::FCP::Txn::GetPut;
 
 *rcv_data_not_found = \&Net::FCP::Txn::rcv_throw_exception;
 
+sub rcv_data {
+   my ($self, $chunk) = @_;
+
+   $self->{data} .= $chunk;
+
+   $self->progress ("data", { chunk => length $chunk, received => length $self->{data}, total => $self->{datalength} });
+
+   if ($self->{datalength} == length $self->{data}) {
+      my $data = delete $self->{data};
+      my $meta = Net::FCP::parse_metadata substr $data, 0, $self->{metalength}, "";
+
+      $self->set_result ([$meta, $data]);
+   }
+}
+
 sub rcv_data_found {
    my ($self, $attr, $type) = @_;
 
@@ -710,23 +792,6 @@ sub rcv_data_found {
 
    $self->{datalength} = hex $attr->{data_length};
    $self->{metalength} = hex $attr->{metadata_length};
-}
-
-sub eof {
-   my ($self) = @_;
-
-   if ($self->{datalength} == length $self->{data}) {
-      my $data = delete $self->{data};
-      my $meta = Net::FCP::parse_metadata substr $data, 0, $self->{metalength}, "";
-
-      $self->set_result ([$meta, $data]);
-   } elsif (!exists $self->{result}) {
-      $self->throw (Net::FCP::Exception->new (short_data => {
-                                                 reason   => "unexpected eof or internal node error",
-                                                 received => length $self->{data},
-                                                 expected => $self->{datalength},
-                                              }));
-   }
 }
 
 package Net::FCP::Txn::ClientPut;
@@ -746,6 +811,20 @@ sub rcv_success {
    $self->set_result ($attr);
 }
 
+=back
+
+=head2 The Net::FCP::Exception CLASS
+
+Any unexpected (non-standard) responses that make it impossible to return
+the advertised result will result in an exception being thrown when the
+C<result> method is called.
+
+These exceptions are represented by objects of this class.
+
+=over 4
+
+=cut
+
 package Net::FCP::Exception;
 
 use overload
@@ -753,10 +832,48 @@ use overload
       "Net::FCP::Exception<<$_[0][0]," . (join ":", %{$_[0][1]}) . ">>\n";
    };
 
+=item $exc = new Net::FCP::Exception $type, \%attr
+
+Create a new exception object of the given type (a string like
+C<route_not_found>), and a hashref containing additional attributes
+(usually the attributes of the message causing the exception).
+
+=cut
+
 sub new {
    my ($class, $type, $attr) = @_;
 
    bless [Net::FCP::tolc $type, { %$attr }], $class;
+}
+
+=item $exc->type([$type])
+
+With no arguments, returns the exception type. Otherwise a boolean
+indicating wether the exception is of the given type is returned.
+
+=cut
+
+sub type {
+   my ($self, $type) = @_;
+
+   @_ >= 2
+      ? $self->[0] eq $type
+      : $self->[0];
+}
+
+=item $exc->attr([$attr])
+
+With no arguments, returns the attributes. Otherwise the named attribute
+value is returned.
+
+=cut
+
+sub attr {
+   my ($self, $attr) = @_;
+
+   @_ >= 2
+      ? $self->[1]{$attr}
+      : $self->[1];
 }
 
 =back
