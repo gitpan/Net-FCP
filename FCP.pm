@@ -47,7 +47,7 @@ package Net::FCP;
 
 use Carp;
 
-$VERSION = 0.05;
+$VERSION = 0.06;
 
 no warnings;
 
@@ -127,7 +127,7 @@ sub parse_metadata {
 
             $hdr->{$p[0]}               = $v if @p == 1; # lamest code I ever wrote
             $hdr->{$p[0]}{$p[1]}        = $v if @p == 2;
-            $hdr->{$p[0]}{$p[1]}{$p[3]} = $v if @p == 3;
+            $hdr->{$p[0]}{$p[1]}{$p[2]} = $v if @p == 3;
             die "FATAL: 4+ dot metadata"     if @p >= 4;
          }
 
@@ -559,7 +559,7 @@ sub rcv {
 # used as a default exception thrower
 sub rcv_throw_exception {
    my ($self, $attr, $type) = @_;
-   $self->throw (new Net::FCP::Exception $type, $attr);
+   $self->throw (Net::FCP::Exception->new ($type, $attr));
 }
 
 *rcv_failed       = \&Net::FCP::Txn::rcv_throw_exception;
