@@ -1,0 +1,130 @@
+NAME
+    Net::FCP - http://freenet.sf.net client protocol
+
+SYNOPSIS
+     use Net::FCP;
+
+     my $fcp = new Net::FCP;
+
+     my $ni = $fcp->txn_node_info->result;
+     my $ni = $fcp->node_info;
+
+DESCRIPTION
+    See <http://freenet.sourceforge.net/index.php?page=fcp> for a
+    description of what the messages do. I am too lazy to document all this
+    here.
+
+WARNING
+    This module is alpha. While it probably won't destroy (much :) of your
+    data, it currently works only with the Event module (alkthough the event
+    mechanism is fully pluggable).
+
+  THE Net::FCP CLASS
+    $fcp = new Net::FCP [host => $host][, port => $port]
+        Create a new virtual FCP connection to the given host and port
+        (default 127.0.0.1:8481).
+
+        Connections are virtual because no persistent physical connection is
+        established. However, the existance of the node is checked by
+        executing a "ClientHello" transaction.
+
+    $txn = $fcp->txn(type => attr => val,...)
+        The low-level interface to transactions. Don't use it.
+
+    $txn = $fcp->txn_client_hello
+    $nodehello = $fcp->client_hello
+        Executes a ClientHello request and returns it's results.
+
+           {
+             max_file_size => "5f5e100",
+             protocol => "1.2",
+             node => "Fred,0.6,1.46,7050"
+           }
+
+    $txn = $fcp->txn_client_info
+    $nodeinfo = $fcp->client_info
+        Executes a ClientInfo request and returns it's results.
+
+           {
+             max_file_size => "5f5e100",
+             datastore_max => "2540be400",
+             node_port => 369,
+             java_name => "Java HotSpot(_T_M) Server VM",
+             operating_system_version => "2.4.20",
+             estimated_load => 52,
+             free_memory => "5cc0148",
+             datastore_free => "5ce03400",
+             node_address => "1.2.3.4",
+             active_jobs => "1f",
+             allocated_memory => "bde0000",
+             architecture => "i386",
+             routing_time => "a5",
+             least_recent_timestamp => "f41538b878",
+             available_threads => 17,
+             datastore_used => "1f72bb000",
+             java_version => "Blackdown-1.4.1-01",
+             is_transient => "false",
+             operating_system => "Linux",
+             java_vendor => "http://www.blackdown.org/",
+             most_recent_timestamp => "f77e2cc520"
+           }
+
+    $txn = $fcp->txn_generate_chk ($metadata, $data)
+    $uri = $fcp->generate_chk ($metadata, $data)
+        Creates a new CHK, given the metadata and data. UNTESTED.
+
+    $txn = $fcp->txn_generate_svk_pair
+    ($public, $private) = @{ $fcp->generate_svk_pair }
+        Creates a new SVK pair. Returns an arrayref.
+
+           [
+             "hKs0-WDQA4pVZyMPKNFsK1zapWY",
+             "ZnmvMITaTXBMFGl4~jrjuyWxOWg"
+           ]
+
+    $txn = $fcp->txn_insert_private_key ($private)
+    $uri = $fcp->insert_private_key ($private)
+        Inserts a private key. $private can be either an insert URI (must
+        start with freenet:SSK@) or a raw private key (i.e. the private
+        value you get back from "generate_svk_pair").
+
+        Returns the public key.
+
+        UNTESTED.
+
+    $txn = $fcp->txn_get_size ($uri)
+    $length = $fcp->get_size ($uri)
+        Finds and returns the size (rounded up to the nearest power of two)
+        of the given document.
+
+        UNTESTED.
+
+    MISSING: ClientGet, ClientPut
+
+  THE Net::FCP::Txn CLASS
+    All requests (or transactions) are executed in a asynchroneous way (LIE:
+    uploads are blocking). For each request, a "Net::FCP::Txn" object is
+    created (worse: a tcp connection is created, too).
+
+    For each request there is actually a different subclass (and it's
+    possible to subclass these, although of course not documented).
+
+    The most interesting method is "result".
+
+    new arg => val,...
+        Creates a new "Net::FCP::Txn" object. Not normally used.
+
+    $result = $txn->result
+        Waits until a result is available and then returns it.
+
+        This waiting is (depending on your event modul) not very efficient,
+        as it is done outside the "mainloop".
+
+SEE ALSO
+    <http://freenet.sf.net>.
+
+BUGS
+AUTHOR
+     Marc Lehmann <pcg@goof.com>
+     http://www.goof.com/pcg/marc/
+
