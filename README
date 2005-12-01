@@ -14,28 +14,15 @@ DESCRIPTION
     description of what the messages do. I am too lazy to document all this
     here.
 
+    The module uses AnyEvent to find a suitable Event module.
+
 WARNING
     This module is alpha. While it probably won't destroy (much :) of your
     data, it currently falls short of what it should provide (intelligent
     uri following, splitfile downloads, healing...)
 
   IMPORT TAGS
-    Nothing much can be "imported" from this module right now. There are,
-    however, certain "import tags" that can be used to select the event
-    model to be used.
-
-    Event models are implemented as modules under the "Net::FCP::Event::xyz"
-    class, where "xyz" is the event model to use. The default is "Event" (or
-    later "Auto").
-
-    The import tag to use is named "event=xyz", e.g. "event=Event",
-    "event=Glib" etc.
-
-    You should specify the event module to use only in the main program.
-
-    If no event model has been specified, FCP tries to autodetect it on
-    first use (e.g. first transaction), in this order: Coro, Event, Glib,
-    Tk.
+    Nothing much can be "imported" from this module right now.
 
   FREENET BASICS
     Ok, this section will not explain any freenet basics to you, just some

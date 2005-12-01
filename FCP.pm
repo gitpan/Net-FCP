@@ -16,6 +16,8 @@ Net::FCP - http://freenet.sf.net client protocol
 See L<http://freenet.sourceforge.net/index.php?page=fcp> for a description
 of what the messages do. I am too lazy to document all this here.
 
+The module uses L<AnyEvent> to find a suitable Event module.
+
 =head1 WARNING
 
 This module is alpha. While it probably won't destroy (much :) of your
@@ -24,21 +26,7 @@ following, splitfile downloads, healing...)
 
 =head2 IMPORT TAGS
 
-Nothing much can be "imported" from this module right now. There are,
-however, certain "import tags" that can be used to select the event model
-to be used.
-
-Event models are implemented as modules under the C<Net::FCP::Event::xyz>
-class, where C<xyz> is the event model to use. The default is C<Event> (or
-later C<Auto>).
-
-The import tag to use is named C<event=xyz>, e.g. C<event=Event>,
-C<event=Glib> etc.
-
-You should specify the event module to use only in the main program.
-
-If no event model has been specified, FCP tries to autodetect it on first
-use (e.g. first transaction), in this order: Coro, Event, Glib, Tk.
+Nothing much can be "imported" from this module right now.
 
 =head2 FREENET BASICS
 
@@ -74,26 +62,14 @@ package Net::FCP;
 
 use Carp;
 
-$VERSION = 0.8;
+$VERSION = '1.0';
 
 no warnings;
 
+use AnyEvent;
+
 use Net::FCP::Metadata;
 use Net::FCP::Util qw(tolc touc xeh);
-
-our $EVENT = Net::FCP::Event::Auto::;
-
-sub import {
-   shift;
-
-   for (@_) {
-      if (/^event=(\w+)$/) {
-         $EVENT = "Net::FCP::Event::$1";
-         eval "require $EVENT";
-      }
-   }
-   die $@ if $@;
-}
 
 =item $fcp = new Net::FCP [host => $host][, port => $port][, progress => \&cb]
 
@@ -408,7 +384,7 @@ sub new {
    my $class = shift;
    my $self = bless { @_ }, $class;
 
-   $self->{signal} = $EVENT->new_signal;
+   $self->{signal} = AnyEvent->condvar;
 
    $self->{fcp}{txn}{$self} = $self;
 
@@ -444,9 +420,7 @@ sub new {
    
    $self->{fh} = $fh;
    
-   $self->{w} = $EVENT->new_from_fh ($fh)
-                      ->cb (sub { $self->fh_ready_w })
-                      ->poll (0, 1, 1);
+   $self->{w} = AnyEvent->io (fh => $fh, poll => 'w', cb => sub { $self->fh_ready_w });
    
    $self;
 }
@@ -515,7 +489,8 @@ sub fh_ready_w {
       substr $self->{sbuf}, 0, $len, "";
       unless (length $self->{sbuf}) {
          fcntl $self->{fh}, F_SETFL, 0;
-         $self->{w}->cb(sub { $self->fh_ready_r })->poll (1, 0, 1);
+         undef $self->{w}; #d# #workaround for buggy Tk versions
+         $self->{w} = AnyEvent->io (fh => $self->{fh}, poll => 'r', cb => sub { $self->fh_ready_r });
       }
    } elsif (defined $len) {
       $self->throw (Net::FCP::Exception->new (network_error => { reason => "unexpected end of file while writing" }));
@@ -590,7 +565,7 @@ sub set_result {
    unless (exists $self->{result}) {
       $self->{result} = $result;
       $self->{cb}->($self) if exists $self->{cb};
-      $self->{signal}->send;
+      $self->{signal}->broadcast;
    }
 }
 
@@ -845,37 +820,5 @@ L<http://freenet.sf.net>.
 
 =cut
 
-package Net::FCP::Event::Auto;
-
-my @models = (
-      [Coro  => Coro::Event::],
-      [Event => Event::],
-      [Glib  => Glib::],
-      [Tk    => Tk::],
-);
-
-sub AUTOLOAD {
-   $AUTOLOAD =~ s/.*://;
-
-   for (@models) {
-      my ($model, $package) = @$_;
-      if (defined ${"$package\::VERSION"}) {
-         $EVENT = "Net::FCP::Event::$model";
-         eval "require $EVENT"; die if $@;
-         goto &{"$EVENT\::$AUTOLOAD"};
-      }
-   }
-
-   for (@models) {
-      my ($model, $package) = @$_;
-      $EVENT = "Net::FCP::Event::$model";
-      if (eval "require $EVENT") {
-         goto &{"$EVENT\::$AUTOLOAD"};
-      }
-   }
-
-   die "No event module selected for Net::FCP and autodetect failed. Install any of these: Coro, Event, Glib or Tk.";
-}
-
-1;
+1
 

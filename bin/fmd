@@ -191,7 +191,7 @@ package job;
 use Coro;
 use Fcntl;
 use IO::Handle;
-use Array::Heap;
+use Array::Heap2;
 
 my $count = 0;
 

@@ -15,16 +15,12 @@ WriteMakefile(
                        Crypt::Twofish  => 0,
                        Crypt::Rijndael => 0,
                        Digest::SHA1    => 0,
-                       Event           => 0.87, # or Tk, Glib, Coro
+                       AnyEvent        => 0.2,
                     },
     PM           => {
     		    'FCP.pm'		=> '$(INST_LIBDIR)/FCP.pm',
     		    'FCP/Util.pm'	=> '$(INST_LIBDIR)/FCP/Util.pm',
     		    'FCP/Metadata.pm'	=> '$(INST_LIBDIR)/FCP/Metadata.pm',
-    		    'FCP/Event/Event.pm'=> '$(INST_LIBDIR)/FCP/Event/Event.pm',
-    		    'FCP/Event/Coro.pm'	=> '$(INST_LIBDIR)/FCP/Event/Coro.pm',
-    		    'FCP/Event/Glib.pm'	=> '$(INST_LIBDIR)/FCP/Event/Glib.pm',
-    		    'FCP/Event/Tk.pm'	=> '$(INST_LIBDIR)/FCP/Event/Tk.pm',
     		    'FCP/Key/CHK.pm'	=> '$(INST_LIBDIR)/FCP/Key/CHK.pm',
     		    'FCP/Key/SSK.pm'	=> '$(INST_LIBDIR)/FCP/Key/SSK.pm',
     		   },

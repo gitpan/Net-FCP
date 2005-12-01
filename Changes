@@ -1,5 +1,9 @@
 Revision history for Perl extension Net::FCP
 
+1.0  Thu Dec  1 23:05:47 CET 2005
+	- use AnyEvent, remove own Event interface.
+        - work around the many bugs in Tk wrt. event handling.
+
 0.8  Thu Mar  3 18:00:52 CET 2005
 	- use Array::Heap2, not Array::Heap.
         - small fixes and improvements everywhere.
