@@ -1,14 +1,18 @@
-# http://module-build.sourceforge.net/META-spec.html
-#XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
-name:         Net-FCP
-version:      1.0
-version_from: FCP.pm
-installdirs:  site
-requires:
-    AnyEvent:                      0.2
+--- #YAML:1.0
+name:                Net-FCP
+version:             1.1
+abstract:            ~
+license:             ~
+generated_by:        ExtUtils::MakeMaker version 6.32
+distribution_type:   module
+requires:     
+    Algorithm::FEC:                1
+    AnyEvent:                      2.6
+    Coro:                          4.34
     Crypt::Rijndael:               0
     Crypt::Twofish:                0
     Digest::SHA1:                  0
-
-distribution_type: module
-generated_by: ExtUtils::MakeMaker version 6.23
+    EV:                            2
+meta-spec:
+    url:     http://module-build.sourceforge.net/META-spec-v1.2.html
+    version: 1.2

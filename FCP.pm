@@ -62,7 +62,7 @@ package Net::FCP;
 
 use Carp;
 
-$VERSION = '1.0';
+$VERSION = '1.1';
 
 no warnings;
 
@@ -406,10 +406,8 @@ sub new {
       or Carp::croak "unable to create new tcp socket: $!";
    binmode $fh, ":raw";
    fcntl $fh, F_SETFL, O_NONBLOCK;
-   connect $fh, (sockaddr_in $self->{fcp}{port}, inet_aton $self->{fcp}{host})
-      and !$!{EWOULDBLOCK}
-      and !$!{EINPROGRESS}
-      and Carp::croak "FCP::txn: unable to connect to $self->{fcp}{host}:$self->{fcp}{port}: $!\n";
+   connect $fh, (sockaddr_in $self->{fcp}{port}, inet_aton $self->{fcp}{host});
+#      and Carp::croak "FCP::txn: unable to connect to $self->{fcp}{host}:$self->{fcp}{port}: $!\n";
 
    $self->{sbuf} = 
       "\x00\x00\x00\x02"
@@ -489,7 +487,6 @@ sub fh_ready_w {
       substr $self->{sbuf}, 0, $len, "";
       unless (length $self->{sbuf}) {
          fcntl $self->{fh}, F_SETFL, 0;
-         undef $self->{w}; #d# #workaround for buggy Tk versions
          $self->{w} = AnyEvent->io (fh => $self->{fh}, poll => 'r', cb => sub { $self->fh_ready_r });
       }
    } elsif (defined $len) {
@@ -502,7 +499,7 @@ sub fh_ready_w {
 sub fh_ready_r {
    my ($self) = @_;
 
-   if (sysread $self->{fh}, $self->{buf}, 65536, length $self->{buf}) {
+   if (sysread $self->{fh}, $self->{buf}, 16384 + 1024, length $self->{buf}) {
       for (;;) {
          if ($self->{datalen}) {
             #warn "expecting new datachunk $self->{datalen}, got ".(length $self->{buf})."\n";#d#

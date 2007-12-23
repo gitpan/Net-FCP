@@ -1,5 +1,8 @@
 #!/opt/bin/perl
 
+#system "echo $$ >fmd.pid";
+#use Coro::Debug; our $server = new_unix_server Coro::Debug "debug";
+
 =head1 fmd - the freenet mass downloader
 
 Fmd is at a very early stage of development (and very hackish, too), as I
@@ -32,7 +35,7 @@ moved to the done subdir.
 FREDHOST and FREDPORT do the obvious. Fix these docs if you disagree.
 
 Also edit the fmd executable for the number of threads and other
-non-useful constants. The default number (200) works for me, probably not
+non-useful constants. The default number (250) works for me, probably not
 for you.
 
 =head2 COMMANDS
@@ -87,14 +90,21 @@ Kill the command prompt. Yupp.
 
 =cut
 
+use strict;
+
+use EV;
+use Coro::EV;
+
 use Net::FCP;
-use Storable;
+use Storable ();
 use Time::HiRes;
 use Coro;
-use Coro::Event;
+use Coro::Channel;
 use Coro::Handle;
 use Coro::Signal;
 use Coro::Timer;
+use Coro::AIO;
+use Coro::Storable ();
 use List::Util;
 use Digest::SHA1;
 use Algorithm::FEC;
@@ -102,10 +112,17 @@ use Digest::SHA1;
 use Net::FCP::Util;
 use POSIX ();
 
+Coro::AIO::max_poll_time 0.01;
+Coro::AIO::min_parallel 1;
+Coro::AIO::max_parallel 32;
+
+EV::set_io_collect_interval 0.2;
+EV::set_timeout_collect_interval 0.05;
+
 $|=1;
 
-our $MAX_TXN = 350; # use max. this many transactions in parallel
-our @HTL = (12,20);
+our $MAX_TXN = 400; # use max. this many transactions in parallel
+our @HTL = (5,20);
 our $VERIFY_CHK = 1; # verify all blocks, again and again (only useful to debugging).
 our $FMD_HOME = $ENV{FMD_HOME} || "$ENV{HOME}/fmd";
 
@@ -116,8 +133,10 @@ defined $FMD_HOME
 
 mkdir $FMD_HOME, 0700;
 
-our $QUEUE_HOME = "$FMD_HOME/tmp";
+our $QUEUE_HOME = "$FMD_HOME/job";
 mkdir $QUEUE_HOME, 0700;
+our $DATA_HOME = "$FMD_HOME/tmp";
+mkdir $DATA_HOME, 0700;
 our $DONE_HOME = "$FMD_HOME/done";
 mkdir $DONE_HOME, 0700;
 
@@ -147,13 +166,13 @@ sub cmdline {
          chomp;
          if (/<attach(?:ment|ed|)>(.*) \* (CHK[^<]+)<\/attach/) {
             $job = push_key $2, $1;
-         } elsif (/(CHK\@[a-zA-Z0-9,~\-]{54})[\/ ]+(.*)$/) {
+         } elsif (/(CHK\@[a-zA-Z0-9,~\-]{54})[\/ ]+(.*?)\s*$/) {
             $job = push_key $1, $2;
          } elsif (s/^(\d+)//) {
             if ($job = $job{$1}) {
-               print $o delete $job->{log};
-               if ($job->{input}) {
-               }
+#               print $o delete $job->{log};
+#               if ($job->{input}) {
+#               }
             }
             redo;
          } elsif (/^q/) {
@@ -163,15 +182,17 @@ sub cmdline {
             for my $job (sort { $a->{id} <=> $b->{id} } values %job) {
                print $o "$_ $job->{id}: $job->{p}{key} $job->{p}{title} $job->{status}\n";
             }
-         } elsif (/^pri\s*(\d+)/) {
-            if ($job) {
-               $job->{p}{pri} = $1;
-               $job->save;
-            }
+#         } elsif (/^pri\s*(\d+)/) {
+#            if ($job) {
+#               $job->{p}{pri} = $1;
+#               $job->save;
+#            }
          } elsif (/^s$/) {
             print $o $job->show if $job;
          } elsif (/^k$/) {
             $job->kill if $job;
+         } elsif (/^p(.*)/) {
+            print $o +(join " ", eval $1), "\n";
          } elsif (/\S/) {
             #
          } else {
@@ -188,26 +209,42 @@ sub cmdline {
 
 package job;
 
+use strict;
+
 use Coro;
+use Coro::AIO;
 use Fcntl;
 use IO::Handle;
 use Array::Heap2;
 
-my $count = 0;
+our $count = 0;
 
 sub new {
    my $class = shift;
 
    my $self = bless { @_ }, $class;
 
+   for my $job (values %job) {
+      if ($job->{p}{key} eq $self->{p}{key}) {
+         warn "job $job->{id} already works on this, not adding";
+         aio_unlink $self->{job};
+         return;
+      }
+   }
+
+   $self->{p}{title} !~ /\//
+      or die "$self->{p}{title}: malformed key\n";
+
+   $self->{p}{title} =~ s/\s+$//;
+   $self->{p}{title} =~ s/\n/_/g;
+
    $self->{id} = ++$count;
    $self->{job} ||= "$QUEUE_HOME/" . Time::HiRes::time . ":$count.j";
 
    $job{$self->{id}} = $self;
 
-   $self->save;
    $self->start;
-   $self;
+   $self
 }
 
 sub new_from_key {
@@ -222,8 +259,13 @@ sub new_from_file {
 
 sub save {
    my ($self) = @_;
-   Storable::nstore $self->{p}, "$self->{job}~";
-   rename "$self->{job}~", $self->{job};
+   if (my $fh = aio_open "$self->{job}~", O_CREAT|O_TRUNC|O_WRONLY, 0600) {
+      aio_write $fh, 0, undef, Coro::Storable::blocking_nfreeze $self->{p}, 0;
+      aio_fsync $fh;
+      aio_close $fh;
+      aio_rename "$self->{job}~", $self->{job};
+      aio_pathsync $QUEUE_HOME;
+   }
 }
 
 sub clean {
@@ -231,7 +273,7 @@ sub clean {
 
    delete $job{$self->{id}};
    $self->save;
-   rename $self->{job}, "$DONE_HOME/$self->{p}{title}.job";
+   system "mv", $self->{job}, "$DONE_HOME/$self->{p}{title}.job";
    unlink $self->{job};
 }
 
@@ -242,9 +284,9 @@ sub kill {
    $self->{coro}->cancel;
 }
 
-my @queue;
-my $queue_change = new Coro::Signal;
-my $queue_alloc = 0;
+our @queue;
+our $queue_change = new Coro::Signal;
+our $queue_alloc = 0;
 
 async {
    for (;;) {
@@ -275,13 +317,23 @@ sub txn_end {
    $queue_change->send;
 }
 
+sub txn_client_get {
+   my %arg = @_;
+
+   txn_begin $arg{pri};
+   $FCP->txn_client_get ($arg{uri}, $arg{htl})->cb (unblock_sub {
+      txn_end;
+
+      $arg{cb}->(@_);
+   });
+}
+
 sub fetch_uri {
    my ($pri, $uri) = @_;
 
    for(my $count = 1; ; $count += 0.3) {
       for my $htl (@HTL) {
          txn_begin time + $htl + $count;
-         my $sig = new Coro::Signal;
          my ($meta, $data) = eval { @{ $FCP->client_get ($uri, $htl) } };
          txn_end;
          if ($@) {
@@ -310,7 +362,8 @@ sub log {
    my ($self, $text) = @_;
    my $time = POSIX::strftime "%H:%M:%S", localtime time;
    warn "$time $self->{id},$self->{p}{pri}: $text\n";
-   $self->{log} .= "$time $text\n";
+   $self->{p}{log} .= "$time $text\n";
+   $self->save;
 }
 
 sub feedback {
@@ -322,16 +375,17 @@ sub feedback {
 sub show {
    my ($self) = @_;
 
-   "ID: $self->{id}\n"
+   "\n$self->{p}{log}\n"
+      . "ID: $self->{id}\n"
       . "Title: $self->{p}{title}\n"
-      . "Blocks#: " . @{$self->{p}{blk}} . "\n"
+      . "Blocks#: " . @{$self->{p}{blk} || []} . "\n"
       . "Blocks: " . (join "", map {
          $_->{done} ? "+" : "-"
-      } @{$self->{p}{blk}}) . "\n" .
-   "";
+      } @{$self->{p}{blk} || []}) . "\n" .
+   ""
 }
 
-my $id;
+our $id;
 
 sub MAXSEG (){ 128*1024*1024 }
 sub MINSEG (){   6* 128*1024 }
@@ -350,12 +404,16 @@ sub start {
    $self->{p}{pri} ||= 1;
    $self->{p}{state} ||= "examine";
 
-   $self->{file} = "$QUEUE_HOME/tmp.$self->{p}{title}";
+   $self->{job} =~ /\/([^\/]*)\.j$/ or die "$self->{job}: missing .j";
+   $self->{file} = "$DATA_HOME/$1.d";
    sysopen $self->{fh}, $self->{file}, O_RDWR|O_CREAT, 0600
+   #$self->{fh} = aio_open $self->{file}, O_RDWR|O_CREAT, 0600 
       or die "$self->{file}: $!";
 
    $self->{status} = "starting";
    $self->{coro} = async {
+      $self->save;
+
       for(;;) {
          my ($state, @args) = ref $self->{p}{state} ? @{$self->{p}{state}} : $self->{p}{state};
          my $next = eval { $self->can ("state_$state")->($self, @args) };
@@ -363,7 +421,7 @@ sub start {
             $self->log ($@);
             $next = $self->feedback ("continue with state: ");
          }
-         $self->log ($self->{status} = "STATE CHANGE: $next");
+         $self->log ($self->{status} = "STATE CHANGE: ". join ", ", ref $next ? @$next : $next);
          $self->{p}{state} = $next;
          $self->save;
       }
@@ -374,17 +432,17 @@ sub state_finish {
    my ($self, $save) = @_;
 
    if ($save) {
-      IO::Handle::sync $self->{fh};
+      aio_fsync $self->{fh};
       close $self->{fh};
 
-      unlink "$DONE_HOME/$self->{p}{title}";
-      link $self->{file}, "$DONE_HOME/$self->{p}{title}"
-         or die "link: $self->{file} => $DONE_HOME/$self->{p}{title}: $!";
-      system "sync";
+      aio_unlink "$DONE_HOME/$self->{p}{title}";
+      aio_link $self->{file}, "$DONE_HOME/$self->{p}{title}"
+         and die "link: $self->{file} => $DONE_HOME/$self->{p}{title}: $!";
+      aio_pathsync $DONE_HOME;
    }
    $self->clean;
 
-   unlink $self->{file};
+   aio_unlink $self->{file};
 
    $self->{status} = "finished";
    $self->feedback ("finished");
@@ -408,7 +466,8 @@ sub state_examine {
       if (my $splitfile = $p->{meta}{document}[0]{split_file}) {
          return "splitfile";
       } elsif ((defined $p->{data}) and (length $p->{data})) {
-         syswrite $self->{fh}, $p->{data};
+         syswrite $self->{fh}, delete $p->{data};
+         aio_fsync $self->{fh};
          return ["finish", 1];
       }
 
@@ -526,9 +585,8 @@ sub state_splitfile {
             my $htl = $HTL[$blk->{htl}++ % @HTL];
             my $pri = int time + $htl / 20 * 7200 * rand;
 
-            txn_begin $pri;
             #warn $self->{id} . ", GET<$htl, $pri>\n";#d#
-            $txn[$id] ||= $FCP->txn_client_get ($blk->{uri}, $htl)->cb(sub {
+            $txn[$id] ||= txn_client_get pri => $pri, uri => $blk->{uri}, htl => $htl, cb => sub {
                undef $txn[$id];
 
                my $seg = $blk->{seg};
@@ -539,11 +597,9 @@ sub state_splitfile {
                   $blk->{size} == length $data
                      or die sprintf "block $id expected size %d, got %d\n", $blk->{size}, length $data;
 
-                  $blk->{offset} == sysseek $self->{fh}, $blk->{offset}, 0
-                     or die "sysseek: $!";
-                  (length $data) == (syswrite $self->{fh}, $data)
+                  (length $data) == (aio_write $self->{fh}, $blk->{offset}, (length $data), $data, 0)
                      or die "unable to write chunk to disk, not setting valid flag";
-                  IO::Handle::sync $self->{fh};
+                  aio_fsync $self->{fh};
 
                   $blk->{done} = 1;
                   $blk->{meta} = $meta->{raw} if length $meta->{raw};#d#
@@ -570,9 +626,8 @@ sub state_splitfile {
                }
                $self->{status} = "splitfile fetch ($seg->{done}/$seg->{todo}, $fail failed)";
 
-               txn_end;
                $sig->send;
-            });
+            };
          }
 
          for my $seg (@segments) {
@@ -583,28 +638,28 @@ sub state_splitfile {
                   (delete $txn[$id])->cancel if $txn[$id];
                }
 
-               $self->log ("verifying segment $seg->{id}");
+               my $verify;
                for my $id (@{$seg->{blk}}) {
                   my $blk = $blk->[$id];
                   if ($blk->{done}) {
-                     sysseek $self->{fh}, $blk->{offset}, 0;
-                     sysread $self->{fh}, my $buf, $blk->{size};
+                     aio_read $self->{fh}, $blk->{offset}, $blk->{size}, my $buf, 0;
 
                      my $k1 = Net::FCP::Util::extract_chk_hash $blk->{uri};
                      my $k2 = Net::FCP::Util::generate_chk_hash $blk->{meta}, $buf;
 
                      if ($k1 ne $k2) {
-                        print "v";#d#
+                        $verify .= "v";
                         #warn sprintf "$p->{title} block $id BROKEN (%s != %s)", (unpack "H*", $k1), (unpack "H*", $k2);
                         $blk->{done} = 0;
                         $seg->{done}--;
                         $self->save;
                      } else {
-                        print "V";#d#
+                        $verify .= "V";
                      }
                   }
                }
-               print "\n";
+               $self->log ("verified segment $seg->{id}");
+               $self->log ($verify);
 
                if ($seg->{done} >= $seg->{todo} && !$seg->{finished}) {
                   $self->log ("verified segment OK $seg->{id}");
@@ -668,8 +723,8 @@ sub state_splitfile {
       if (exists $p->{meta}{document}[0]{info}{checksum}
           and $p->{meta}{document}[0]{info}{checksum} ne $sha1) {
          $self->log ("META: $p->{meta}{document}[0]{info}{checksum} and real checksum $sha1 for $filesize DIFFER");
-         $self->feedback ("CHECKSUM ERROR");
-         terminate;
+#         $self->feedback ("CHECKSUM ERROR");
+#         terminate;
       }
 
       truncate $self->{fh}, $filesize;
@@ -697,5 +752,5 @@ open my $stdin , "<&0" or die;
 open my $stdout, ">&1" or die;
 cmdline unblock $stdin, unblock $stdout;
 
-&Coro::Event::loop;
+EV::loop;
 

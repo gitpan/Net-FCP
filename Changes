@@ -1,5 +1,14 @@
 Revision history for Perl extension Net::FCP
 
+http://wiki.freenetproject.org/FreenetFCPSpec2Point0
+
+1.1  Sun Dec 23 16:39:38 CET 2007
+        - incompatible temporary filename change.
+	- removed workaround for Tk, expecting a timely fix :)
+        - made fmd use Coro::AIO for most I/O.
+        - converted fmd to EV.
+        - lots of minor changes.
+
 1.0  Thu Dec  1 23:05:47 CET 2005
 	- use AnyEvent, remove own Event interface.
         - work around the many bugs in Tk wrt. event handling.

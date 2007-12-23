@@ -15,7 +15,10 @@ WriteMakefile(
                        Crypt::Twofish  => 0,
                        Crypt::Rijndael => 0,
                        Digest::SHA1    => 0,
-                       AnyEvent        => 0.2,
+                       AnyEvent        => 2.6,
+                       Algorithm::FEC  => 1,
+                       EV              => 2,
+                       Coro            => 4.34,
                     },
     PM           => {
     		    'FCP.pm'		=> '$(INST_LIBDIR)/FCP.pm',
