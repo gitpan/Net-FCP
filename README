@@ -10,16 +10,14 @@ SYNOPSIS
      my $ni = $fcp->node_info;
 
 DESCRIPTION
+    This module implements the first version of the freenet client protocol,
+    for use with freenet versions 0.5. For freenet protocol version 2.0
+    support (as used by freenet 0.7), see the AnyEvent::FCP module.
+
     See <http://freenet.sourceforge.net/index.php?page=fcp> for a
-    description of what the messages do. I am too lazy to document all this
-    here.
+    description of what the messages do.
 
     The module uses AnyEvent to find a suitable Event module.
-
-WARNING
-    This module is alpha. While it probably won't destroy (much :) of your
-    data, it currently falls short of what it should provide (intelligent
-    uri following, splitfile downloads, healing...)
 
   IMPORT TAGS
     Nothing much can be "imported" from this module right now.

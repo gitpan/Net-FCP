@@ -1,6 +1,8 @@
 Revision history for Perl extension Net::FCP
 
-http://wiki.freenetproject.org/FreenetFCPSpec2Point0
+1.2  Thu May  1 17:28:52 CEST 2008
+	- clarify protocol version.
+        - many small updates to fmd.
 
 1.1  Sun Dec 23 16:39:38 CET 2007
         - incompatible temporary filename change.

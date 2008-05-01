@@ -13,16 +13,14 @@ Net::FCP - http://freenet.sf.net client protocol
 
 =head1 DESCRIPTION
 
+This module implements the first version of the freenet client protocol,
+for use with freenet versions 0.5. For freenet protocol version 2.0
+support (as used by freenet 0.7), see the L<AnyEvent::FCP> module.
+
 See L<http://freenet.sourceforge.net/index.php?page=fcp> for a description
-of what the messages do. I am too lazy to document all this here.
+of what the messages do.
 
 The module uses L<AnyEvent> to find a suitable Event module.
-
-=head1 WARNING
-
-This module is alpha. While it probably won't destroy (much :) of your
-data, it currently falls short of what it should provide (intelligent uri
-following, splitfile downloads, healing...)
 
 =head2 IMPORT TAGS
 
@@ -62,7 +60,7 @@ package Net::FCP;
 
 use Carp;
 
-$VERSION = '1.1';
+$VERSION = '1.2';
 
 no warnings;
 

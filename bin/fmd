@@ -1,7 +1,7 @@
 #!/opt/bin/perl
 
-#system "echo $$ >fmd.pid";
-#use Coro::Debug; our $server = new_unix_server Coro::Debug "debug";
+system "echo $$ >fmd.pid";
+use Coro::Debug; our $server = new_unix_server Coro::Debug "debug";
 
 =head1 fmd - the freenet mass downloader
 
@@ -98,7 +98,7 @@ use Coro::EV;
 use Net::FCP;
 use Storable ();
 use Time::HiRes;
-use Coro;
+use Coro 4.23;
 use Coro::Channel;
 use Coro::Handle;
 use Coro::Signal;
@@ -112,17 +112,14 @@ use Digest::SHA1;
 use Net::FCP::Util;
 use POSIX ();
 
-Coro::AIO::max_poll_time 0.01;
-Coro::AIO::min_parallel 1;
-Coro::AIO::max_parallel 32;
-
-EV::set_io_collect_interval 0.2;
-EV::set_timeout_collect_interval 0.05;
+Coro::AIO::max_poll_time 0.05;
+Coro::AIO::min_parallel 4;
+Coro::AIO::max_parallel 4;
 
 $|=1;
 
-our $MAX_TXN = 400; # use max. this many transactions in parallel
-our @HTL = (5,20);
+our $MAX_TXN = 50; # use max. this many transactions in parallel
+our @HTL = (3,20);
 our $VERIFY_CHK = 1; # verify all blocks, again and again (only useful to debugging).
 our $FMD_HOME = $ENV{FMD_HOME} || "$ENV{HOME}/fmd";
 
@@ -260,7 +257,8 @@ sub new_from_file {
 sub save {
    my ($self) = @_;
    if (my $fh = aio_open "$self->{job}~", O_CREAT|O_TRUNC|O_WRONLY, 0600) {
-      aio_write $fh, 0, undef, Coro::Storable::blocking_nfreeze $self->{p}, 0;
+      my $data = Coro::Storable::blocking_nfreeze $self->{p};
+      aio_write $fh, 0, undef, $data, 0;
       aio_fsync $fh;
       aio_close $fh;
       aio_rename "$self->{job}~", $self->{job};
@@ -296,7 +294,7 @@ async {
                or $queue_alloc < $MAX_TXN - 5)) {
          (pop_heap @queue)->[1]->send;
          $queue_alloc++;
-         Coro::Timer::sleep 0.05;
+         #Coro::Timer::sleep 0.05;
       }
       $queue_change->wait;
    }
@@ -360,10 +358,13 @@ sub fetch_uri {
 
 sub log {
    my ($self, $text) = @_;
-   my $time = POSIX::strftime "%H:%M:%S", localtime time;
+   my $time = POSIX::strftime "%Y-%m-%d %H:%M:%S", localtime time;
    warn "$time $self->{id},$self->{p}{pri}: $text\n";
-   $self->{p}{log} .= "$time $text\n";
-   $self->save;
+
+   unless ($text =~ /Net::FCP::Exception/) {
+      $self->{p}{log} .= "$time $text\n";
+      $self->save;
+   }
 }
 
 sub feedback {
@@ -583,9 +584,11 @@ sub state_splitfile {
             next if $txn[$id] || $blk->{done} || $blk->{seg}{todo} <= $blk->{seg}{done};
 
             my $htl = $HTL[$blk->{htl}++ % @HTL];
-            my $pri = int time + $htl / 20 * 7200 * rand;
+            my $pri = int EV::now + $htl / 20 * 7200 * rand;
 
             #warn $self->{id} . ", GET<$htl, $pri>\n";#d#
+            my $start = EV::now;
+
             $txn[$id] ||= txn_client_get pri => $pri, uri => $blk->{uri}, htl => $htl, cb => sub {
                undef $txn[$id];
 
@@ -609,8 +612,8 @@ sub state_splitfile {
                   $::htl_sum += $htl;
                   $::htl_cnt++;
 
-                  $self->log (sprintf "got block $seg->{id}.$id %d ($seg->{done}/$seg->{todo}) at htl $htl (%f) and pri $pri",
-                                       length $data, $::htl_sum / $::htl_cnt);
+                  $self->log (sprintf "got block $seg->{id}.$id %d ($seg->{done}/$seg->{todo}) at htl $htl (%f) and pri $pri (%.1fs)",
+                                       length $data, $::htl_sum / $::htl_cnt, EV::now - $start);
                } else {
                   if ($@) {
                      if ($@->type ("data_not_found")) {
@@ -751,6 +754,8 @@ print "\n";
 open my $stdin , "<&0" or die;
 open my $stdout, ">&1" or die;
 cmdline unblock $stdin, unblock $stdout;
+
+EV::set_io_collect_interval 0.1;
 
 EV::loop;
 
